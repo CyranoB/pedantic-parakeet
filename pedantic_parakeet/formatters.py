@@ -1,7 +1,7 @@
 """Output formatters for transcription results."""
 
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 
 from .transcriber import TranscriptionResult
 
@@ -117,7 +117,7 @@ def format_json(result: TranscriptionResult) -> str:
     """
     data = {
         "schema_version": JSON_SCHEMA_VERSION,
-        "generated_at": datetime.utcnow().isoformat() + "Z",
+        "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "audio_path": result.audio_path,
         "model_id": result.model_id,
         "text": result.text,

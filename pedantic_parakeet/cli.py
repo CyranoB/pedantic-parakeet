@@ -43,6 +43,53 @@ def version_callback(value: bool) -> None:
         raise typer.Exit()
 
 
+def _write_outputs(
+    result,
+    audio_path: Path,
+    formats: list[str],
+    output: Path | None,
+    timestamps: bool,
+    console: Console,
+    verbose: bool,
+) -> None:
+    """Write transcription results to files in all requested formats."""
+    out_dir = output or audio_path.parent
+
+    for fmt in formats:
+        out_file = out_dir / (audio_path.stem + EXTENSIONS[fmt])
+
+        if fmt == "txt":
+            content = format_txt(result, timestamps=timestamps)
+        else:
+            formatter = FORMATTERS[fmt]
+            content = formatter(result)
+
+        out_file.write_text(content, encoding="utf-8")
+
+        if verbose:
+            console.print(f"  [green]✓[/green] {out_file}")
+
+
+def _process_file(
+    audio_path: Path,
+    transcriber: Transcriber,
+    formats: list[str],
+    output: Path | None,
+    timestamps: bool,
+    console: Console,
+    err_console: Console,
+    verbose: bool,
+) -> bool:
+    """Process a single audio file. Returns True on success, False on error."""
+    try:
+        result = transcriber.transcribe(audio_path)
+        _write_outputs(result, audio_path, formats, output, timestamps, console, verbose)
+        return True
+    except Exception as e:
+        err_console.print(f"[red]Error processing {audio_path}: {e}[/red]")
+        return False
+
+
 @app.command()
 def main(
     inputs: Annotated[
@@ -181,34 +228,19 @@ def main(
         for audio_path in audio_files:
             progress.update(task, description=f"[cyan]{audio_path.name}[/cyan]")
 
-            try:
-                # Transcribe
-                result = transcriber.transcribe(audio_path)
-
-                # Determine output directory
-                out_dir = output or audio_path.parent
-
-                # Write outputs
-                for fmt in formats:
-                    out_file = out_dir / (audio_path.stem + EXTENSIONS[fmt])
-
-                    if fmt == "txt":
-                        content = format_txt(result, timestamps=timestamps)
-                    else:
-                        formatter = FORMATTERS[fmt]
-                        content = formatter(result)
-
-                    out_file.write_text(content, encoding="utf-8")
-
-                    if verbose:
-                        console.print(f"  [green]✓[/green] {out_file}")
-
+            if _process_file(
+                audio_path,
+                transcriber,
+                formats,
+                output,
+                timestamps,
+                console,
+                err_console,
+                verbose,
+            ):
                 success_count += 1
-
-            except Exception as e:
+            else:
                 error_count += 1
-                err_console.print(f"[red]Error processing {audio_path}: {e}[/red]")
-
                 if fail_fast:
                     raise typer.Exit(1)
 

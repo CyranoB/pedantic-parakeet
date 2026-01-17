@@ -15,6 +15,16 @@ def is_supported_audio(path: Path) -> bool:
     return path.suffix.lower() in SUPPORTED_EXTENSIONS
 
 
+def _discover_in_directory(path: Path, recursive: bool) -> list[Path]:
+    """Discover audio files within a single directory."""
+    pattern = "**/*" if recursive else "*"
+    files = []
+    for file_path in path.glob(pattern):
+        if file_path.is_file() and is_supported_audio(file_path):
+            files.append(file_path)
+    return files
+
+
 def discover_audio_files(paths: list[Path], recursive: bool = False) -> list[Path]:
     """
     Discover audio files from a list of paths.
@@ -33,12 +43,8 @@ def discover_audio_files(paths: list[Path], recursive: bool = False) -> list[Pat
             if is_supported_audio(path):
                 audio_files.append(path)
         elif path.is_dir():
-            pattern = "**/*" if recursive else "*"
-            for file_path in path.glob(pattern):
-                if file_path.is_file() and is_supported_audio(file_path):
-                    audio_files.append(file_path)
+            audio_files.extend(_discover_in_directory(path, recursive))
 
-    # Sort for consistent ordering
     return sorted(set(audio_files))
 
 
