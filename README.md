@@ -64,6 +64,10 @@ pedantic-parakeet ./lectures/ -v
 
 Uses NVIDIA's Parakeet TDT models via MLX, optimized for Apple Silicon. The default model (`parakeet-tdt-0.6b-v3`) will be downloaded on first run (~1GB).
 
+## Notes
+
+- The model performs automatic language detection per segment. When speakers code-switch (mix languages), some segments may be transcribed in the detected language rather than the primary language. For example, a French lecture where the speaker says "Okay" might have that segment transcribed in English.
+
 ## License
 
 MIT
