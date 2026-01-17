@@ -8,7 +8,7 @@ A CLI tool for transcribing audio files using NVIDIA Parakeet TDT models via `pa
 
 ```bash
 # Clone and install
-git clone https://github.com/yourusername/pedantic-parakeet
+git clone https://github.com/CyranoB/pedantic-parakeet
 cd pedantic-parakeet
 uv sync
 ```
