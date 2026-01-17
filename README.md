@@ -1,3 +1,5 @@
+![Pedantic Parakeet](assets/header.png)
+
 # Pedantic Parakeet
 
 *The pedantic parakeet will record your words exactly as spoken, including all the 'ums' and 'ahs' and that thing you said about your mother-in-law that you really shouldn't have.*
