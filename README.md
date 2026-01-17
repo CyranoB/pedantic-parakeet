@@ -2,7 +2,7 @@
 
 # Pedantic Parakeet
 
-*The pedantic parakeet will record your words exactly as spoken, including all the 'ums' and 'ahs' and that thing you said about your mother-in-law that you really shouldn't have.*
+*In the same way that the Guild of Accountants believes every penny must be accounted for, the pedantic parakeet believes every syllable deserves its moment in the permanent record—a philosophy that sounds admirable right up until you remember what you said to the girl from HR at the Christmas party after your fourth glass of wine.*
 
 A CLI tool for transcribing audio files using NVIDIA Parakeet TDT models via `parakeet-mlx`, optimized for Apple Silicon.
 
