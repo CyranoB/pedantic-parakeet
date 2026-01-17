@@ -37,24 +37,39 @@ def _format_timestamp_simple(seconds: float) -> str:
     return f"{minutes:02d}:{secs:02d}"
 
 
-def format_txt(result: TranscriptionResult, timestamps: bool = False) -> str:
+def format_txt(
+    result: TranscriptionResult, timestamps: bool = False, pause_threshold: float = 2.0
+) -> str:
     """
     Format transcription as plain text.
 
     Args:
         result: Transcription result
         timestamps: If True, include timestamps for each segment
+        pause_threshold: Insert paragraph break when gap between segments exceeds this (seconds)
 
     Returns:
-        Plain text transcript
+        Plain text transcript with one segment per line and paragraph breaks on pauses
     """
-    if not timestamps:
+    if not result.segments:
         return result.text
 
     lines = []
+    prev_end = 0.0
+
     for segment in result.segments:
-        ts = _format_timestamp_simple(segment.start)
-        lines.append(f"[{ts}] {segment.text}")
+        # Add paragraph break if there's a long pause
+        if lines and (segment.start - prev_end) > pause_threshold:
+            lines.append("")
+
+        if timestamps:
+            ts = _format_timestamp_simple(segment.start)
+            lines.append(f"[{ts}] {segment.text}")
+        else:
+            lines.append(segment.text)
+
+        prev_end = segment.end
+
     return "\n".join(lines)
 
 
