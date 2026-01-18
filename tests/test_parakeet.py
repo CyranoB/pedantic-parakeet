@@ -313,14 +313,20 @@ class TestDecodeGreedyLogic:
         vocabulary = ["a", "b", "c"]
         blank_token_id = len(vocabulary)
         
+        # Simulate the logic: blank tokens should not be added
         pred_token = blank_token_id
         hypothesis = []
         
-        is_non_blank = pred_token != blank_token_id
-        if is_non_blank:
-            hypothesis.append(pred_token)
+        # Only add non-blank tokens (this mirrors the real decode logic)
+        hypothesis = self._add_token_if_non_blank(pred_token, blank_token_id, hypothesis)
         
         assert len(hypothesis) == 0
+    
+    def _add_token_if_non_blank(self, token: int, blank_id: int, hypothesis: list) -> list:
+        """Helper to add token if not blank."""
+        if token != blank_id:
+            hypothesis.append(token)
+        return hypothesis
 
     def test_non_blank_token_added(self):
         """Test that non-blank tokens are added to hypothesis."""
@@ -330,9 +336,8 @@ class TestDecodeGreedyLogic:
         pred_token = 1
         hypothesis = []
         
-        is_non_blank = pred_token != blank_token_id
-        if is_non_blank:
-            hypothesis.append(pred_token)
+        # Use the helper method to test the logic
+        hypothesis = self._add_token_if_non_blank(pred_token, blank_token_id, hypothesis)
         
         assert len(hypothesis) == 1
         assert hypothesis[0] == 1
@@ -344,16 +349,24 @@ class TestDecodeGreedyLogic:
         step = 0
         duration = 0
         
-        for _ in range(5):
-            is_stuck = duration == 0
-            if is_stuck:
-                new_symbols += 1
-                should_advance = max_symbols is not None and max_symbols <= new_symbols
-                if should_advance:
-                    step += 1
-                    new_symbols = 0
+        # Use helper to simulate the stuck prevention logic
+        step, new_symbols = self._simulate_stuck_prevention(
+            duration, step, new_symbols, max_symbols, iterations=5
+        )
         
         assert step > 0
+    
+    def _simulate_stuck_prevention(
+        self, duration: int, step: int, new_symbols: int, max_symbols: int, iterations: int
+    ) -> tuple[int, int]:
+        """Simulate stuck prevention logic for testing."""
+        for _ in range(iterations):
+            if duration == 0:
+                new_symbols += 1
+                if max_symbols <= new_symbols:
+                    step += 1
+                    new_symbols = 0
+        return step, new_symbols
 
 
 class TestDecodeBeamLogic:

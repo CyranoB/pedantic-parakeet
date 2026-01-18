@@ -502,6 +502,100 @@ class ParakeetTDT(BaseParakeet):
             key=lambda x: x.score / (max(1, len(x.tokens)) ** length_penalty),
         )
 
+    def _create_beam_token(
+        self,
+        token_id: int,
+        step: int,
+        duration: int,
+        token_logprob: float,
+        duration_logprob: float,
+    ) -> AlignedToken:
+        """Create an aligned token for beam search."""
+        return AlignedToken(
+            id=token_id,
+            start=step * self.time_ratio,
+            duration=duration * self.time_ratio,
+            confidence=math.exp(token_logprob + duration_logprob),
+            text=tokenizer.decode([token_id], self.vocabulary),
+        )
+
+    def _expand_hypothesis(
+        self,
+        hyp: Any,
+        token_id: int,
+        duration_idx: int,
+        token_logprob: float,
+        duration_logprob: float,
+        decoder_hidden: tuple[mx.array, mx.array],
+        duration_reward: float,
+        blank_token_id: int,
+    ) -> Any:
+        """Expand a hypothesis with a new token/duration decision."""
+        from dataclasses import dataclass as inner_dataclass
+        
+        dur = self.durations[duration_idx]
+        is_blank = token_id == blank_token_id
+        step, stuck = self._compute_beam_step_update(dur, hyp.step, hyp.stuck)
+        score = self._compute_hypothesis_score(
+            hyp.score, token_logprob, duration_logprob, duration_reward
+        )
+
+        new_tokens = hyp.tokens
+        if not is_blank:
+            new_token = self._create_beam_token(
+                token_id, hyp.step, dur, token_logprob, duration_logprob
+            )
+            new_tokens = list(hyp.tokens) + [new_token]
+
+        # Return dict-like structure since we can't access the Hypothesis class here
+        return {
+            "score": score,
+            "step": step,
+            "last_token": hyp.last_token if is_blank else token_id,
+            "hidden_state": hyp.hidden_state if is_blank else decoder_hidden,
+            "stuck": stuck,
+            "tokens": new_tokens,
+        }
+
+    def _process_beam_hypothesis(
+        self,
+        hyp: Any,
+        feature: mx.array,
+        config: DecodingConfig,
+        beam_token: int,
+        beam_duration: int,
+        blank_token_id: int,
+    ) -> list[dict]:
+        """Process a single hypothesis and generate all expansions."""
+        joint_out, _, decoder_hidden = self._run_decoder_joint_pass(
+            feature, hyp.step, hyp.last_token, hyp.hidden_state
+        )
+
+        token_logits = joint_out[0, 0, 0, : blank_token_id + 1]
+        token_logits = self._apply_language_bias(token_logits, config.language_bias)
+        duration_logits = joint_out[0, 0, 0, blank_token_id + 1 :]
+
+        token_logprobs = nn.log_softmax(token_logits, -1)
+        duration_logprobs = nn.log_softmax(duration_logits, -1)
+
+        token_k = self._get_top_k_indices(token_logprobs, beam_token)
+        duration_k = self._get_top_k_indices(duration_logprobs, beam_duration)
+
+        token_logprobs_list = typing.cast(List[float], token_logprobs.tolist())
+        duration_logprobs_list = typing.cast(List[float], duration_logprobs.tolist())
+
+        expansions = []
+        for tok in token_k:
+            for dec in duration_k:
+                expansion = self._expand_hypothesis(
+                    hyp, tok, dec,
+                    token_logprobs_list[tok], duration_logprobs_list[dec],
+                    decoder_hidden, config.decoding.duration_reward, blank_token_id
+                )
+                expansions.append(expansion)
+
+        return expansions
+
     def decode_beam(
         self,
         features: mx.array,
@@ -511,7 +605,7 @@ class ParakeetTDT(BaseParakeet):
         *,
         config: DecodingConfig = DecodingConfig(),
     ) -> tuple[list[list[AlignedToken]], list[Optional[tuple[mx.array, mx.array]]]]:
-        assert isinstance(config.decoding, Beam)  # type guarntee
+        assert isinstance(config.decoding, Beam)
 
         beam_config = config.decoding
         beam_token = min(beam_config.beam_size, len(self.vocabulary) + 1)
@@ -543,59 +637,19 @@ class ParakeetTDT(BaseParakeet):
 
             finished: list[Hypothesis] = []
             active_beam: list[Hypothesis] = [
-                Hypothesis(
-                    score=0.0, step=0, last_token=last_token[batch],
-                    hidden_state=hidden_state[batch], stuck=0, tokens=[]
-                )
+                Hypothesis(0.0, 0, last_token[batch], hidden_state[batch], 0, [])
             ]
 
             while len(finished) < max_candidates and active_beam:
                 candidates: Dict[int, Hypothesis] = {}
 
                 for hyp in active_beam:
-                    joint_out, _, decoder_hidden = self._run_decoder_joint_pass(
-                        feature, hyp.step, hyp.last_token, hyp.hidden_state
+                    expansions = self._process_beam_hypothesis(
+                        hyp, feature, config, beam_token, beam_duration, blank_token_id
                     )
-
-                    token_logits = joint_out[0, 0, 0, : blank_token_id + 1]
-                    token_logits = self._apply_language_bias(token_logits, config.language_bias)
-                    duration_logits = joint_out[0, 0, 0, blank_token_id + 1 :]
-
-                    token_logprobs = nn.log_softmax(token_logits, -1)
-                    duration_logprobs = nn.log_softmax(duration_logits, -1)
-
-                    token_k = self._get_top_k_indices(token_logprobs, beam_token)
-                    duration_k = self._get_top_k_indices(duration_logprobs, beam_duration)
-
-                    token_logprobs_list = typing.cast(List[float], token_logprobs.tolist())
-                    duration_logprobs_list = typing.cast(List[float], duration_logprobs.tolist())
-
-                    for tok in token_k:
-                        is_blank = tok == blank_token_id
-                        for dec in duration_k:
-                            dur = self.durations[dec]
-                            step, stuck = self._compute_beam_step_update(dur, hyp.step, hyp.stuck)
-                            score = self._compute_hypothesis_score(
-                                hyp.score, token_logprobs_list[tok],
-                                duration_logprobs_list[dec], beam_config.duration_reward
-                            )
-
-                            new_tokens = hyp.tokens if is_blank else (
-                                list(hyp.tokens) + [AlignedToken(
-                                    id=tok, start=hyp.step * self.time_ratio,
-                                    duration=dur * self.time_ratio,
-                                    confidence=math.exp(token_logprobs_list[tok] + duration_logprobs_list[dec]),
-                                    text=tokenizer.decode([tok], self.vocabulary),
-                                )]
-                            )
-
-                            new_hyp = Hypothesis(
-                                score=score, step=step,
-                                last_token=hyp.last_token if is_blank else tok,
-                                hidden_state=hyp.hidden_state if is_blank else decoder_hidden,
-                                stuck=stuck, tokens=new_tokens,
-                            )
-                            self._merge_hypothesis_scores(candidates, hash(new_hyp), new_hyp)
+                    for exp in expansions:
+                        new_hyp = Hypothesis(**exp)
+                        self._merge_hypothesis_scores(candidates, hash(new_hyp), new_hyp)
 
                 finished.extend([h for h in candidates.values() if h.step >= length])
                 active_beam = sorted(
