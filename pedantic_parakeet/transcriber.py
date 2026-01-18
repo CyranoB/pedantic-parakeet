@@ -4,8 +4,14 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import parakeet_mlx
-from parakeet_mlx import DecodingConfig, Greedy, SentenceConfig
+from .language_bias import build_language_bias
+from .parakeet_mlx import (
+    BaseParakeet,
+    DecodingConfig,
+    Greedy,
+    SentenceConfig,
+    from_pretrained,
+)
 
 # Default model - optimized for Apple Silicon
 DEFAULT_MODEL = "mlx-community/parakeet-tdt-0.6b-v3"
@@ -67,6 +73,8 @@ class Transcriber:
         max_segment_duration: float | None = None,
         chunk_duration: float = 120.0,
         overlap_duration: float = 15.0,
+        language: str | None = None,
+        language_strength: float = 0.5,
     ):
         """
         Initialize the transcriber.
@@ -78,28 +86,41 @@ class Transcriber:
             chunk_duration: Split long audio into chunks of this length (seconds).
                             Use 0 to disable chunking (may cause memory issues).
             overlap_duration: Overlap between chunks to prevent word-cutting (seconds)
+            language: Target language code to reduce code-switching (e.g., "fr")
+            language_strength: Bias strength 0.0-2.0 (default 0.5)
         """
         self.model_id = model_id
         self.max_words = max_words_per_segment
         self.max_duration = max_segment_duration
         self.chunk_duration = chunk_duration if chunk_duration > 0 else None
         self.overlap_duration = overlap_duration
-        self._model: parakeet_mlx.BaseParakeet | None = None
+        self.language = language
+        self.language_strength = language_strength
+        self._model: BaseParakeet | None = None
 
-    def _load_model(self) -> parakeet_mlx.BaseParakeet:
+    def _load_model(self) -> BaseParakeet:
         """Lazy load the model on first use."""
         if self._model is None:
-            self._model = parakeet_mlx.from_pretrained(self.model_id)
+            self._model = from_pretrained(self.model_id)
         return self._model
 
-    def _build_config(self) -> DecodingConfig:
+    def _build_config(self, model: BaseParakeet) -> DecodingConfig:
         """Build decoding configuration."""
+        language_bias = None
+        if self.language:
+            language_bias = build_language_bias(
+                model.vocabulary,
+                self.language,
+                self.language_strength,
+            )
+
         return DecodingConfig(
             decoding=Greedy(),
             sentence=SentenceConfig(
                 max_words=self.max_words,
                 max_duration=self.max_duration,
             ),
+            language_bias=language_bias,
         )
 
     def transcribe(
@@ -118,7 +139,7 @@ class Transcriber:
             TranscriptionResult with text and timed segments
         """
         model = self._load_model()
-        config = self._build_config()
+        config = self._build_config(model)
 
         # Run transcription with chunking for long audio
         result = model.transcribe(

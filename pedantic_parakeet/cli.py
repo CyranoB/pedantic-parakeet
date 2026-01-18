@@ -11,6 +11,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskPr
 from . import __version__
 from .audio import discover_audio_files, check_ffmpeg, SUPPORTED_EXTENSIONS
 from .formatters import FORMATTERS, EXTENSIONS, format_txt
+from .language_bias import SUPPORTED_LANGUAGES
 from .transcriber import Transcriber, DEFAULT_MODEL
 
 app = typer.Typer(
@@ -264,6 +265,20 @@ def main(
             help="Chunk duration in seconds for long audio (0 to disable)",
         ),
     ] = 120.0,
+    language: Annotated[
+        str | None,
+        typer.Option(
+            "--language", "-l",
+            help="Target language to reduce code-switching (fr)",
+        ),
+    ] = None,
+    language_strength: Annotated[
+        float,
+        typer.Option(
+            "--language-strength",
+            help="Bias strength 0.0-2.0 (default 0.5)",
+        ),
+    ] = 0.5,
     verbose: Annotated[
         bool,
         typer.Option(
@@ -282,6 +297,20 @@ def main(
     ] = None,
 ) -> None:
     """Transcribe audio files to text, SRT, VTT, or JSON."""
+    # Validate language option
+    if language and language not in SUPPORTED_LANGUAGES:
+        raise typer.BadParameter(
+            f"Unsupported language '{language}'. Must be one of: {sorted(SUPPORTED_LANGUAGES)}",
+            param_hint="--language",
+        )
+
+    # Validate strength range
+    if not 0.0 <= language_strength <= 2.0:
+        raise typer.BadParameter(
+            "Must be between 0.0 and 2.0",
+            param_hint="--language-strength",
+        )
+
     # Parse formats
     formats = parse_formats(format)
 
@@ -310,7 +339,12 @@ def main(
     if verbose:
         console.print(f"[dim]Loading model: {model}...[/dim]")
 
-    transcriber = Transcriber(model_id=model, chunk_duration=chunk_duration)
+    transcriber = Transcriber(
+        model_id=model,
+        chunk_duration=chunk_duration,
+        language=language,
+        language_strength=language_strength,
+    )
 
     success_count, error_count = _process_files(
         audio_files,

@@ -1,0 +1,8 @@
+Vendored from parakeet-mlx (pip)
+Source: https://github.com/senstella/parakeet-mlx
+License: Apache 2.0 (see LICENSE file in this directory)
+
+Modifications:
+- Converted 15 absolute imports to relative imports
+- Added language_bias field to DecodingConfig
+- Added bias application in decode_greedy() and decode_beam()
