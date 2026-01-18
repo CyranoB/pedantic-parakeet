@@ -137,7 +137,7 @@ class BaseParakeet(nn.Module):
         lengths: Optional[mx.array],
         last_token: Optional[list[Optional[int]]],
         hidden_state: Optional[list[Optional[tuple[mx.array, mx.array]]]],
-    ) -> tuple[int, int, mx.array, list[Optional[int]], list[Optional[tuple[mx.array, mx.array]]]]:
+    ) -> tuple[int, mx.array, list[Optional[int]], list[Optional[tuple[mx.array, mx.array]]]]:
         """Initialize parameters for decoding."""
         B, S, *_ = features.shape
 
@@ -150,7 +150,7 @@ class BaseParakeet(nn.Module):
         if last_token is None:
             last_token = list([None] * B)
 
-        return B, S, lengths, last_token, hidden_state
+        return B, lengths, last_token, hidden_state
 
     def generate(
         self, mel: mx.array, *, decoding_config: DecodingConfig = DecodingConfig()
@@ -377,7 +377,7 @@ class ParakeetTDT(BaseParakeet):
             def __hash__(self) -> int:
                 return hash((self.step, tuple((x.id for x in self.tokens))))
 
-        B, S, lengths, last_token, hidden_state = self._initialize_decode_params(
+        B, lengths, last_token, hidden_state = self._initialize_decode_params(
             features, lengths, last_token, hidden_state
         )
 
@@ -572,7 +572,7 @@ class ParakeetTDT(BaseParakeet):
     ) -> tuple[list[list[AlignedToken]], list[Optional[tuple[mx.array, mx.array]]]]:
         assert isinstance(config.decoding, Greedy)  # type guarntee
 
-        B, S, lengths, last_token, hidden_state = self._initialize_decode_params(
+        B, lengths, last_token, hidden_state = self._initialize_decode_params(
             features, lengths, last_token, hidden_state
         )
 
@@ -699,7 +699,7 @@ class ParakeetRNNT(BaseParakeet):
             "Only greedy decoding is supported for RNNT decoder now"
         )
 
-        B, S, lengths, last_token, hidden_state = self._initialize_decode_params(
+        B, lengths, last_token, hidden_state = self._initialize_decode_params(
             features, lengths, last_token, hidden_state
         )
 
