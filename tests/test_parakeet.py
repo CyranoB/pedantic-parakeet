@@ -1,8 +1,7 @@
 """Tests for parakeet.py model functions using mocks."""
 
 import pytest
-from unittest.mock import MagicMock, patch, PropertyMock
-from dataclasses import dataclass
+from unittest.mock import MagicMock, patch
 
 import mlx.core as mx
 
@@ -70,7 +69,7 @@ class TestBaseParakeetHelpers:
 
     def test_initialize_decode_params_creates_defaults(self, mock_base_parakeet):
         """Test _initialize_decode_params creates default values."""
-        features = mx.zeros((2, 10, 64))  # batch=2, seq=10, features=64
+        features = mx.zeros((2, 10, 64))
         
         B, lengths, last_token, hidden_state = mock_base_parakeet._initialize_decode_params(
             features, None, None, None
@@ -122,15 +121,15 @@ class TestDecodingConfig:
         config = DecodingConfig(decoding=beam)
         assert isinstance(config.decoding, Beam)
         assert config.decoding.beam_size == 10
-        assert config.decoding.length_penalty == 0.5
+        assert config.decoding.length_penalty == pytest.approx(0.5)
 
     def test_beam_defaults(self):
         """Test Beam default values."""
         beam = Beam()
         assert beam.beam_size == 5
-        assert beam.length_penalty == 1.0
-        assert beam.patience == 1.0
-        assert beam.duration_reward == 0.7
+        assert beam.length_penalty == pytest.approx(1.0)
+        assert beam.patience == pytest.approx(1.0)
+        assert beam.duration_reward == pytest.approx(0.7)
 
     def test_language_bias(self):
         """Test language_bias in config."""
@@ -146,41 +145,35 @@ class TestParakeetTDTDecode:
     def mock_tdt_model(self):
         """Create a mock ParakeetTDT model."""
         model = MagicMock()
-        model.vocabulary = ["a", "b", "c", "d"]  # 4 tokens + blank
+        model.vocabulary = ["a", "b", "c", "d"]
         model.durations = [0, 1, 2, 4]
         model.max_symbols = 10
         model.time_ratio = 0.04
         
-        # Mock _initialize_decode_params to return proper values
         def init_params(features, lengths, last_token, hidden_state):
-            B = features.shape[0]
-            S = features.shape[1]
+            batch_size = features.shape[0]
+            seq_len = features.shape[1]
             if hidden_state is None:
-                hidden_state = [None] * B
+                hidden_state = [None] * batch_size
             if lengths is None:
-                lengths = mx.array([S] * B)
+                lengths = mx.array([seq_len] * batch_size)
             if last_token is None:
-                last_token = [None] * B
-            return B, lengths, last_token, hidden_state
+                last_token = [None] * batch_size
+            return batch_size, lengths, last_token, hidden_state
         
         model._initialize_decode_params = init_params
-        
-        # Mock _compute_confidence
         model._compute_confidence = lambda logits, vocab_size: 0.95
         
         return model
 
     def test_decode_routes_to_greedy(self, mock_tdt_model):
         """Test that decode routes to decode_greedy for Greedy config."""
-        from pedantic_parakeet.parakeet_mlx.parakeet import ParakeetTDT
-        
         mock_tdt_model.decode_greedy = MagicMock(return_value=([], []))
         mock_tdt_model.decode_beam = MagicMock(return_value=([], []))
         
         features = mx.zeros((1, 10, 64))
         config = DecodingConfig(decoding=Greedy())
         
-        # Call the actual decode method logic
         match config.decoding:
             case Greedy():
                 mock_tdt_model.decode_greedy(features, config=config)
@@ -213,10 +206,7 @@ class TestParakeetRNNTDecode:
 
     def test_rnnt_only_supports_greedy(self):
         """Test that RNNT raises error for non-greedy decoding."""
-        # This tests the assertion in the decode method
         config = DecodingConfig(decoding=Beam())
-        
-        # The assertion should fail for Beam decoding
         assert not isinstance(config.decoding, Greedy)
 
 
@@ -234,8 +224,6 @@ class TestParakeetCTCDecode:
 
     def test_ctc_decode_returns_tokens(self, mock_ctc_model):
         """Test CTC decode returns list of token lists."""
-        # CTC decode should return list[list[AlignedToken]]
-        # Mocking the expected behavior
         mock_ctc_model.decode = MagicMock(return_value=[
             [AlignedToken(id=0, text="a", start=0.0, duration=0.1)]
         ])
@@ -261,15 +249,15 @@ class TestAlignedTokenCreation:
         
         assert token.id == 1
         assert token.text == "hello"
-        assert token.start == 0.5
-        assert token.duration == 0.25
-        assert token.end == 0.75  # start + duration
-        assert token.confidence == 0.95
+        assert token.start == pytest.approx(0.5)
+        assert token.duration == pytest.approx(0.25)
+        assert token.end == pytest.approx(0.75)
+        assert token.confidence == pytest.approx(0.95)
 
     def test_aligned_token_default_confidence(self):
         """Test AlignedToken default confidence."""
         token = AlignedToken(id=1, text="test", start=0.0, duration=1.0)
-        assert token.confidence == 1.0
+        assert token.confidence == pytest.approx(1.0)
 
 
 class TestLanguageBiasApplication:
@@ -282,20 +270,19 @@ class TestLanguageBiasApplication:
         
         biased_logits = logits + bias
         
-        assert float(biased_logits[0]) == 0.5
-        assert float(biased_logits[1]) == 2.0
-        assert float(biased_logits[2]) == 2.5
+        assert float(biased_logits[0]) == pytest.approx(0.5)
+        assert float(biased_logits[1]) == pytest.approx(2.0)
+        assert float(biased_logits[2]) == pytest.approx(2.5)
 
     def test_language_bias_none_no_change(self):
         """Test that None language bias doesn't change logits."""
         logits = mx.array([1.0, 2.0, 3.0])
         config = DecodingConfig(language_bias=None)
         
-        # Simulate the check in decode methods
         if config.language_bias is not None:
             logits = logits + config.language_bias
         
-        assert float(logits[0]) == 1.0
+        assert float(logits[0]) == pytest.approx(1.0)
 
 
 class TestBatchProcessing:
@@ -303,19 +290,19 @@ class TestBatchProcessing:
 
     def test_batch_size_detection(self):
         """Test batch size is correctly detected from features."""
-        features = mx.zeros((3, 10, 64))  # batch=3
-        B, S, *_ = features.shape
-        assert B == 3
-        assert S == 10
+        features = mx.zeros((3, 10, 64))
+        batch_size, seq_len, _ = features.shape
+        assert batch_size == 3
+        assert seq_len == 10
 
     def test_lengths_created_for_batch(self):
         """Test lengths array is created for each batch item."""
         features = mx.zeros((3, 10, 64))
-        B, S, *_ = features.shape
-        lengths = mx.array([S] * B)
+        batch_size, seq_len, _ = features.shape
+        lengths = mx.array([seq_len] * batch_size)
         
         assert len(lengths) == 3
-        assert all(int(l) == 10 for l in lengths)
+        assert all(int(length) == 10 for length in lengths)
 
 
 class TestDecodeGreedyLogic:
@@ -324,13 +311,13 @@ class TestDecodeGreedyLogic:
     def test_blank_token_not_added(self):
         """Test that blank tokens are not added to hypothesis."""
         vocabulary = ["a", "b", "c"]
-        blank_token_id = len(vocabulary)  # 3
+        blank_token_id = len(vocabulary)
         
         pred_token = blank_token_id
         hypothesis = []
         
-        # Simulate greedy logic
-        if pred_token != blank_token_id:
+        is_non_blank = pred_token != blank_token_id
+        if is_non_blank:
             hypothesis.append(pred_token)
         
         assert len(hypothesis) == 0
@@ -340,10 +327,11 @@ class TestDecodeGreedyLogic:
         vocabulary = ["a", "b", "c"]
         blank_token_id = len(vocabulary)
         
-        pred_token = 1  # "b"
+        pred_token = 1
         hypothesis = []
         
-        if pred_token != blank_token_id:
+        is_non_blank = pred_token != blank_token_id
+        if is_non_blank:
             hypothesis.append(pred_token)
         
         assert len(hypothesis) == 1
@@ -354,17 +342,17 @@ class TestDecodeGreedyLogic:
         max_symbols = 3
         new_symbols = 0
         step = 0
-        duration = 0  # duration of 0 means no movement
+        duration = 0
         
-        # Simulate stuck prevention
         for _ in range(5):
-            if duration == 0:
+            is_stuck = duration == 0
+            if is_stuck:
                 new_symbols += 1
-                if max_symbols is not None and max_symbols <= new_symbols:
+                should_advance = max_symbols is not None and max_symbols <= new_symbols
+                if should_advance:
                     step += 1
                     new_symbols = 0
         
-        # Should have advanced step due to max_symbols limit
         assert step > 0
 
 
@@ -382,28 +370,24 @@ class TestDecodeBeamLogic:
             {"score": 0.5},
         ]
         
-        # Sort by score descending and take top beam_size
         sorted_candidates = sorted(candidates, key=lambda x: x["score"], reverse=True)
         active_beam = sorted_candidates[:beam_size]
         
         assert len(active_beam) == 3
-        assert active_beam[0]["score"] == 0.9
+        assert active_beam[0]["score"] == pytest.approx(0.9)
 
     def test_length_penalty_affects_ranking(self):
         """Test length penalty affects hypothesis ranking."""
         length_penalty = 2.0
         
-        # Short hypothesis with lower raw score
         short_score = 0.8
         short_length = 2
         short_normalized = short_score / (max(1, short_length) ** length_penalty)
         
-        # Long hypothesis with higher raw score
         long_score = 1.2
         long_length = 5
         long_normalized = long_score / (max(1, long_length) ** length_penalty)
         
-        # Short should rank higher due to length penalty
         assert short_normalized > long_normalized
 
     def test_patience_affects_max_candidates(self):
@@ -432,7 +416,6 @@ class TestTranscribeMethod:
 
     def test_transcribe_calls_generate(self, mock_model_for_transcribe):
         """Test transcribe calls generate method."""
-        # Transcribe should ultimately call generate
         mock_model_for_transcribe.generate(mx.zeros((1, 100, 80)))
         mock_model_for_transcribe.generate.assert_called_once()
 
@@ -443,7 +426,6 @@ class TestTranscribeMethod:
         def callback(current, total):
             callback_calls.append((current, total))
         
-        # Simulate chunked processing callback
         total = 1000
         for i in range(0, total, 200):
             callback(min(i + 200, total), total)
