@@ -2,7 +2,7 @@ import math
 import typing
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Union
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -170,6 +170,85 @@ class BaseParakeet(nn.Module):
         """
         raise NotImplementedError
 
+    def _transcribe_without_chunking(
+        self,
+        audio_data: mx.array,
+        decoding_config: DecodingConfig,
+    ) -> AlignedResult:
+        """Transcribe audio data in a single pass without chunking."""
+        mel = get_logmel(audio_data, self.preprocessor_config)
+        return self.generate(mel, decoding_config=decoding_config)[0]
+
+    def _offset_chunk_tokens(
+        self,
+        chunk_result: AlignedResult,
+        chunk_offset: float,
+    ) -> None:
+        """Apply time offset to all tokens in a chunk result."""
+        for sentence in chunk_result.sentences:
+            for token in sentence.tokens:
+                token.start += chunk_offset
+                token.end = token.start + token.duration
+
+    def _merge_chunk_tokens(
+        self,
+        all_tokens: list[AlignedToken],
+        new_tokens: list[AlignedToken],
+        overlap_duration: float,
+    ) -> list[AlignedToken]:
+        """Merge new tokens with existing tokens, handling overlap."""
+        if not all_tokens:
+            return new_tokens
+
+        try:
+            return merge_longest_contiguous(
+                all_tokens, new_tokens, overlap_duration=overlap_duration
+            )
+        except RuntimeError:
+            return merge_longest_common_subsequence(
+                all_tokens, new_tokens, overlap_duration=overlap_duration
+            )
+
+    def _transcribe_chunked(
+        self,
+        audio_data: mx.array,
+        decoding_config: DecodingConfig,
+        chunk_duration: float,
+        overlap_duration: float,
+        chunk_callback: Optional[Callable],
+    ) -> AlignedResult:
+        """Transcribe audio data in chunks with overlap."""
+        sample_rate = self.preprocessor_config.sample_rate
+        chunk_samples = int(chunk_duration * sample_rate)
+        overlap_samples = int(overlap_duration * sample_rate)
+        step_size = chunk_samples - overlap_samples
+
+        all_tokens: list[AlignedToken] = []
+
+        for start in range(0, len(audio_data), step_size):
+            end = min(start + chunk_samples, len(audio_data))
+
+            if chunk_callback is not None:
+                chunk_callback(end, len(audio_data))
+
+            if end - start < self.preprocessor_config.hop_length:
+                break  # prevent zero-length log mel
+
+            chunk_audio = audio_data[start:end]
+            chunk_mel = get_logmel(chunk_audio, self.preprocessor_config)
+            chunk_result = self.generate(chunk_mel, decoding_config=decoding_config)[0]
+
+            chunk_offset = start / sample_rate
+            self._offset_chunk_tokens(chunk_result, chunk_offset)
+
+            all_tokens = self._merge_chunk_tokens(
+                all_tokens, chunk_result.tokens, overlap_duration
+            )
+
+        return sentences_to_result(
+            tokens_to_sentences(all_tokens, decoding_config.sentence)
+        )
+
     def transcribe(
         self,
         path: Path | str,
@@ -204,61 +283,17 @@ class BaseParakeet(nn.Module):
         audio_path = Path(path)
         audio_data = load_audio(audio_path, self.preprocessor_config.sample_rate)
 
-        if chunk_duration is None:
-            mel = get_logmel(audio_data, self.preprocessor_config)
-            return self.generate(mel, decoding_config=decoding_config)[0]
-
+        # Check if chunking is needed
         audio_length_seconds = len(audio_data) / self.preprocessor_config.sample_rate
+        needs_chunking = chunk_duration is not None and audio_length_seconds > chunk_duration
 
-        if audio_length_seconds <= chunk_duration:
-            mel = get_logmel(audio_data, self.preprocessor_config)
-            return self.generate(mel, decoding_config=decoding_config)[0]
+        if not needs_chunking:
+            return self._transcribe_without_chunking(audio_data, decoding_config)
 
-        chunk_samples = int(chunk_duration * self.preprocessor_config.sample_rate)
-        overlap_samples = int(overlap_duration * self.preprocessor_config.sample_rate)
-
-        all_tokens = []
-
-        for start in range(0, len(audio_data), chunk_samples - overlap_samples):
-            end = min(start + chunk_samples, len(audio_data))
-
-            if chunk_callback is not None:
-                chunk_callback(end, len(audio_data))
-
-            if end - start < self.preprocessor_config.hop_length:
-                break  # prevent zero-length log mel
-
-            chunk_audio = audio_data[start:end]
-            chunk_mel = get_logmel(chunk_audio, self.preprocessor_config)
-
-            chunk_result = self.generate(chunk_mel, decoding_config=decoding_config)[0]
-
-            chunk_offset = start / self.preprocessor_config.sample_rate
-            for sentence in chunk_result.sentences:
-                for token in sentence.tokens:
-                    token.start += chunk_offset
-                    token.end = token.start + token.duration
-
-            if all_tokens:
-                try:
-                    all_tokens = merge_longest_contiguous(
-                        all_tokens,
-                        chunk_result.tokens,
-                        overlap_duration=overlap_duration,
-                    )
-                except RuntimeError:
-                    all_tokens = merge_longest_common_subsequence(
-                        all_tokens,
-                        chunk_result.tokens,
-                        overlap_duration=overlap_duration,
-                    )
-            else:
-                all_tokens = chunk_result.tokens
-
-        result = sentences_to_result(
-            tokens_to_sentences(all_tokens, decoding_config.sentence)
+        # chunk_duration is guaranteed to be not None here due to the check above
+        return self._transcribe_chunked(
+            audio_data, decoding_config, typing.cast(float, chunk_duration), overlap_duration, chunk_callback
         )
-        return result
 
     def transcribe_stream(
         self,
@@ -324,6 +359,52 @@ class ParakeetTDT(BaseParakeet):
         self.decoder = PredictNetwork(args.decoder)
         self.joint = JointNetwork(args.joint)
 
+    def _run_decoder_joint_pass(
+        self,
+        feature: mx.array,
+        step: int,
+        token_input: Optional[int],
+        decoder_hidden_state: Optional[tuple[mx.array, mx.array]],
+    ) -> tuple[mx.array, mx.array, tuple[mx.array, mx.array]]:
+        """Run decoder and joint network for a single step."""
+        decoder_out, (hidden, cell) = self.decoder(
+            mx.array([[token_input]]) if token_input is not None else None,
+            decoder_hidden_state,
+        )
+        decoder_out = decoder_out.astype(feature.dtype)
+        decoder_hidden = (
+            hidden.astype(feature.dtype),
+            cell.astype(feature.dtype),
+        )
+        joint_out = self.joint(feature[:, step : step + 1], decoder_out)
+        return joint_out, decoder_out, decoder_hidden
+
+    def _apply_language_bias(
+        self,
+        token_logits: mx.array,
+        language_bias: Optional[mx.array],
+    ) -> mx.array:
+        """Apply language bias to token logits if provided."""
+        if language_bias is not None:
+            return token_logits + language_bias
+        return token_logits
+
+    def _handle_stuck_prevention(
+        self,
+        duration: int,
+        current_step: int,
+        new_symbols: int,
+    ) -> tuple[int, int]:
+        """Handle stuck prevention logic for TDT decoding."""
+        if duration != 0:
+            return current_step + duration, 0
+
+        new_symbols += 1
+        if self.max_symbols is not None and self.max_symbols <= new_symbols:
+            return current_step + 1, 0
+
+        return current_step + duration, new_symbols
+
     def decode(
         self,
         features: mx.array,
@@ -350,6 +431,77 @@ class ParakeetTDT(BaseParakeet):
                     f"{config.decoding} is not supported in TDT models."
                 )
 
+    def _get_top_k_indices(
+        self,
+        logprobs: mx.array,
+        k: int,
+    ) -> List[int]:
+        """Get top-k indices from log probabilities."""
+        return typing.cast(
+            List[int],
+            mx.argpartition(logprobs, -k)[-k:].tolist(),
+        )
+
+    def _compute_beam_step_update(
+        self,
+        duration: int,
+        current_step: int,
+        current_stuck: int,
+    ) -> tuple[int, int]:
+        """Compute next step and stuck count for beam search."""
+        stuck = 0 if duration != 0 else current_stuck + 1
+
+        if self.max_symbols is not None and stuck >= self.max_symbols:
+            return current_step + 1, 0
+
+        return current_step + duration, stuck
+
+    def _compute_hypothesis_score(
+        self,
+        base_score: float,
+        token_logprob: float,
+        duration_logprob: float,
+        duration_reward: float,
+    ) -> float:
+        """Compute combined score for a hypothesis."""
+        return (
+            base_score
+            + token_logprob * (1 - duration_reward)
+            + duration_logprob * duration_reward
+        )
+
+    def _merge_hypothesis_scores(
+        self,
+        candidates: Dict[int, Any],
+        key: int,
+        new_hypothesis: Any,
+    ) -> None:
+        """Merge hypothesis with same path using log-sum-exp."""
+        if key not in candidates:
+            candidates[key] = new_hypothesis
+            return
+
+        other = candidates[key]
+        maxima = max(other.score, new_hypothesis.score)
+        merged_score = maxima + math.log(
+            math.exp(other.score - maxima) + math.exp(new_hypothesis.score - maxima)
+        )
+
+        if new_hypothesis.score > other.score:
+            candidates[key] = new_hypothesis
+        candidates[key].score = merged_score
+
+    def _select_best_hypothesis(
+        self,
+        hypotheses: list,
+        length_penalty: float,
+    ) -> Any:
+        """Select best hypothesis with length penalty normalization."""
+        return max(
+            hypotheses,
+            key=lambda x: x.score / (max(1, len(x.tokens)) ** length_penalty),
+        )
+
     def decode_beam(
         self,
         features: mx.array,
@@ -361,9 +513,11 @@ class ParakeetTDT(BaseParakeet):
     ) -> tuple[list[list[AlignedToken]], list[Optional[tuple[mx.array, mx.array]]]]:
         assert isinstance(config.decoding, Beam)  # type guarntee
 
-        beam_token = min(config.decoding.beam_size, len(self.vocabulary) + 1)
-        beam_duration = min(config.decoding.beam_size, len(self.durations))
-        max_candidates = round(config.decoding.beam_size * config.decoding.patience)
+        beam_config = config.decoding
+        beam_token = min(beam_config.beam_size, len(self.vocabulary) + 1)
+        beam_duration = min(beam_config.beam_size, len(self.durations))
+        max_candidates = round(beam_config.beam_size * beam_config.patience)
+        blank_token_id = len(self.vocabulary)
 
         @dataclass
         class Hypothesis:
@@ -387,179 +541,122 @@ class ParakeetTDT(BaseParakeet):
             feature = features[batch : batch + 1]
             length = int(lengths[batch])
 
-            finished_hypothesis: list[Hypothesis] = []
+            finished: list[Hypothesis] = []
             active_beam: list[Hypothesis] = [
                 Hypothesis(
-                    score=0.0,
-                    step=0,
-                    last_token=last_token[batch],
-                    hidden_state=hidden_state[batch],
-                    stuck=0,
-                    tokens=[],
+                    score=0.0, step=0, last_token=last_token[batch],
+                    hidden_state=hidden_state[batch], stuck=0, tokens=[]
                 )
             ]
 
-            while len(finished_hypothesis) < max_candidates and active_beam:
+            while len(finished) < max_candidates and active_beam:
                 candidates: Dict[int, Hypothesis] = {}
 
-                for hypothesis in active_beam:
-                    decoder_out, (hidden, cell) = self.decoder(
-                        mx.array([[hypothesis.last_token]])
-                        if hypothesis.last_token is not None
-                        else None,
-                        hypothesis.hidden_state,
-                    )
-                    decoder_out = decoder_out.astype(feature.dtype)
-                    decoder_hidden = (
-                        hidden.astype(feature.dtype),
-                        cell.astype(feature.dtype),
+                for hyp in active_beam:
+                    joint_out, _, decoder_hidden = self._run_decoder_joint_pass(
+                        feature, hyp.step, hyp.last_token, hyp.hidden_state
                     )
 
-                    joint_out = self.joint(
-                        feature[:, hypothesis.step : hypothesis.step + 1], decoder_out
-                    )
+                    token_logits = joint_out[0, 0, 0, : blank_token_id + 1]
+                    token_logits = self._apply_language_bias(token_logits, config.language_bias)
+                    duration_logits = joint_out[0, 0, 0, blank_token_id + 1 :]
 
-                    token_logits, duration_logits = (
-                        joint_out[0, 0, 0, : len(self.vocabulary) + 1],
-                        joint_out[0, 0, 0, len(self.vocabulary) + 1 :],
-                    )
+                    token_logprobs = nn.log_softmax(token_logits, -1)
+                    duration_logprobs = nn.log_softmax(duration_logits, -1)
 
-                    # Apply language bias if provided
-                    if config.language_bias is not None:
-                        token_logits = token_logits + config.language_bias
+                    token_k = self._get_top_k_indices(token_logprobs, beam_token)
+                    duration_k = self._get_top_k_indices(duration_logprobs, beam_duration)
 
-                    token_logprobs, duration_logprobs = (
-                        nn.log_softmax(token_logits, -1),
-                        nn.log_softmax(duration_logits, -1),
-                    )
+                    token_logprobs_list = typing.cast(List[float], token_logprobs.tolist())
+                    duration_logprobs_list = typing.cast(List[float], duration_logprobs.tolist())
 
-                    # raw python ops might be faster from here
-                    token_k, duration_k = (
-                        typing.cast(
-                            List[int],
-                            mx.argpartition(token_logprobs, -beam_token)[
-                                -beam_token:
-                            ].tolist(),
-                        ),
-                        typing.cast(
-                            List[int],
-                            mx.argpartition(duration_logprobs, -beam_duration)[
-                                -beam_duration:
-                            ].tolist(),
-                        ),
-                    )
-
-                    # for faster accessing
-                    token_logprobs = typing.cast(List[float], token_logprobs.tolist())
-                    duration_logprobs = typing.cast(
-                        List[float], duration_logprobs.tolist()
-                    )
-
-                    for token in token_k:
-                        is_blank = token == len(self.vocabulary)
-                        for decision in duration_k:
-                            duration = self.durations[decision]
-                            stuck = 0 if duration != 0 else hypothesis.stuck + 1
-
-                            if (
-                                self.max_symbols is not None
-                                and stuck >= self.max_symbols
-                            ):
-                                step = hypothesis.step + 1
-                                stuck = 0
-                            else:
-                                step = hypothesis.step + duration
-
-                            new_hypotheis = Hypothesis(
-                                score=hypothesis.score
-                                + token_logprobs[token]
-                                * (1 - config.decoding.duration_reward)
-                                + duration_logprobs[decision]
-                                * (config.decoding.duration_reward),
-                                step=step,
-                                last_token=hypothesis.last_token if is_blank else token,
-                                hidden_state=hypothesis.hidden_state
-                                if is_blank
-                                else decoder_hidden,
-                                stuck=stuck,
-                                tokens=hypothesis.tokens
-                                if is_blank
-                                else (
-                                    list(hypothesis.tokens)
-                                    + [
-                                        AlignedToken(
-                                            id=token,
-                                            start=hypothesis.step
-                                            * self.time_ratio,  # hop
-                                            duration=duration * self.time_ratio,  # hop
-                                            confidence=math.exp(
-                                                token_logprobs[token]
-                                                + duration_logprobs[decision]
-                                            ),
-                                            text=tokenizer.decode(
-                                                [token], self.vocabulary
-                                            ),
-                                        )
-                                    ]
-                                ),
+                    for tok in token_k:
+                        is_blank = tok == blank_token_id
+                        for dec in duration_k:
+                            dur = self.durations[dec]
+                            step, stuck = self._compute_beam_step_update(dur, hyp.step, hyp.stuck)
+                            score = self._compute_hypothesis_score(
+                                hyp.score, token_logprobs_list[tok],
+                                duration_logprobs_list[dec], beam_config.duration_reward
                             )
 
-                            # merge if anyone took same path
-                            key = hash(new_hypotheis)
-                            if key in candidates:
-                                other_hypothesis = candidates[key]
+                            new_tokens = hyp.tokens if is_blank else (
+                                list(hyp.tokens) + [AlignedToken(
+                                    id=tok, start=hyp.step * self.time_ratio,
+                                    duration=dur * self.time_ratio,
+                                    confidence=math.exp(token_logprobs_list[tok] + duration_logprobs_list[dec]),
+                                    text=tokenizer.decode([tok], self.vocabulary),
+                                )]
+                            )
 
-                                # log sum exp
-                                maxima = max(
-                                    other_hypothesis.score, new_hypotheis.score
-                                )
-                                score = maxima + math.log(
-                                    math.exp(other_hypothesis.score - maxima)
-                                    + math.exp(new_hypotheis.score - maxima)
-                                )
+                            new_hyp = Hypothesis(
+                                score=score, step=step,
+                                last_token=hyp.last_token if is_blank else tok,
+                                hidden_state=hyp.hidden_state if is_blank else decoder_hidden,
+                                stuck=stuck, tokens=new_tokens,
+                            )
+                            self._merge_hypothesis_scores(candidates, hash(new_hyp), new_hyp)
 
-                                if new_hypotheis.score > other_hypothesis.score:
-                                    candidates[key] = new_hypotheis
-                                candidates[key].score = score
-                            else:
-                                candidates[key] = new_hypotheis
-
-                finished_hypothesis.extend(
-                    [
-                        hypothesis
-                        for hypothesis in candidates.values()
-                        if hypothesis.step >= length
-                    ]
-                )
+                finished.extend([h for h in candidates.values() if h.step >= length])
                 active_beam = sorted(
-                    [
-                        hypothesis
-                        for hypothesis in candidates.values()
-                        if hypothesis.step < length
-                    ],
-                    key=lambda x: x.score,
-                    reverse=True,
-                )[: config.decoding.beam_size]
+                    [h for h in candidates.values() if h.step < length],
+                    key=lambda x: x.score, reverse=True
+                )[: beam_config.beam_size]
 
-            finished_hypothesis = finished_hypothesis + active_beam
-
-            if not finished_hypothesis:
+            all_hypotheses = finished + active_beam
+            if not all_hypotheses:
                 results.append([])
                 results_hidden.append(hidden_state[batch])
             else:
-                beam_length_penalty = (
-                    config.decoding.length_penalty
-                )  # mypy assumes weirdly so we go in safe way
-
-                best = max(
-                    finished_hypothesis,
-                    key=lambda x, penalty=beam_length_penalty: x.score
-                    / (max(1, len(x.tokens)) ** penalty),
-                )
+                best = self._select_best_hypothesis(all_hypotheses, beam_config.length_penalty)
                 results.append(best.tokens)
                 results_hidden.append(best.hidden_state)
 
         return results, results_hidden
+
+    def _decode_greedy_single_batch(
+        self,
+        feature: mx.array,
+        length: int,
+        batch_last_token: Optional[int],
+        batch_hidden_state: Optional[tuple[mx.array, mx.array]],
+        config: DecodingConfig,
+    ) -> tuple[list[AlignedToken], Optional[int], Optional[tuple[mx.array, mx.array]]]:
+        """Decode a single batch using greedy TDT decoding."""
+        hypothesis: list[AlignedToken] = []
+        step = 0
+        new_symbols = 0
+        blank_token_id = len(self.vocabulary)
+
+        while step < length:
+            joint_out, _, decoder_hidden = self._run_decoder_joint_pass(
+                feature, step, batch_last_token, batch_hidden_state
+            )
+
+            token_logits = joint_out[0, 0, :, : blank_token_id + 1]
+            token_logits = self._apply_language_bias(token_logits, config.language_bias)
+
+            pred_token = int(mx.argmax(token_logits))
+            confidence = self._compute_confidence(token_logits, blank_token_id + 1)
+            decision = int(mx.argmax(joint_out[0, 0, :, blank_token_id + 1 :]))
+            duration = self.durations[decision]
+
+            if pred_token != blank_token_id:
+                hypothesis.append(
+                    AlignedToken(
+                        int(pred_token),
+                        start=step * self.time_ratio,
+                        duration=duration * self.time_ratio,
+                        confidence=confidence,
+                        text=tokenizer.decode([pred_token], self.vocabulary),
+                    )
+                )
+                batch_last_token = pred_token
+                batch_hidden_state = decoder_hidden
+
+            step, new_symbols = self._handle_stuck_prevention(duration, step, new_symbols)
+
+        return hypothesis, batch_last_token, batch_hidden_state
 
     def decode_greedy(
         self,
@@ -578,74 +675,12 @@ class ParakeetTDT(BaseParakeet):
 
         results = []
         for batch in range(B):
-            hypothesis = []
-
             feature = features[batch : batch + 1]
             length = int(lengths[batch])
 
-            step = 0
-            new_symbols = 0
-
-            while step < length:
-                # decoder pass
-                decoder_out, (hidden, cell) = self.decoder(
-                    mx.array([[last_token[batch]]])
-                    if last_token[batch] is not None
-                    else None,
-                    hidden_state[batch],
-                )
-                decoder_out = decoder_out.astype(feature.dtype)
-                decoder_hidden = (
-                    hidden.astype(feature.dtype),
-                    cell.astype(feature.dtype),
-                )
-
-                # joint pass
-                joint_out = self.joint(feature[:, step : step + 1], decoder_out)
-
-                # sampling
-                token_logits = joint_out[0, 0, :, : len(self.vocabulary) + 1]
-
-                # Apply language bias if provided
-                if config.language_bias is not None:
-                    token_logits = token_logits + config.language_bias
-
-                pred_token = int(mx.argmax(token_logits))
-
-                # compute confidence score
-                vocab_size = len(self.vocabulary) + 1
-                confidence = self._compute_confidence(token_logits, vocab_size)
-
-                decision = int(
-                    mx.argmax(joint_out[0, 0, :, len(self.vocabulary) + 1 :])
-                )
-
-                # tdt decoding rule
-                if pred_token != len(self.vocabulary):
-                    hypothesis.append(
-                        AlignedToken(
-                            int(pred_token),
-                            start=step * self.time_ratio,
-                            duration=self.durations[decision] * self.time_ratio,
-                            confidence=confidence,
-                            text=tokenizer.decode([pred_token], self.vocabulary),
-                        )
-                    )
-                    last_token[batch] = pred_token
-                    hidden_state[batch] = decoder_hidden
-
-                step += self.durations[int(decision)]
-
-                # prevent stucking rule
-                new_symbols += 1
-
-                if self.durations[int(decision)] != 0:
-                    new_symbols = 0
-                else:
-                    if self.max_symbols is not None and self.max_symbols <= new_symbols:
-                        step += 1
-                        new_symbols = 0
-
+            hypothesis, last_token[batch], hidden_state[batch] = self._decode_greedy_single_batch(
+                feature, length, last_token[batch], hidden_state[batch], config
+            )
             results.append(hypothesis)
 
         return results, hidden_state
@@ -794,6 +829,80 @@ class ParakeetCTC(BaseParakeet):
 
         self.decoder = ConvASRDecoder(args.decoder)
 
+    def _create_ctc_token(
+        self,
+        token_id: int,
+        start_frame: int,
+        end_frame: int,
+        probs: mx.array,
+    ) -> AlignedToken:
+        """Create an aligned token with computed timing and confidence."""
+        vocab_size = len(self.vocabulary) + 1
+        token_probs = probs[start_frame:end_frame]
+        confidence = self._compute_confidence_from_probs(token_probs, vocab_size)
+
+        return AlignedToken(
+            token_id,
+            start=start_frame * self.time_ratio,
+            duration=(end_frame - start_frame) * self.time_ratio,
+            confidence=confidence,
+            text=tokenizer.decode([token_id], self.vocabulary),
+        )
+
+    def _find_last_non_blank_frame(
+        self,
+        best_tokens: mx.array,
+        start_frame: int,
+        length: int,
+    ) -> int:
+        """Find the last non-blank frame from the end."""
+        blank_token_id = len(self.vocabulary)
+        for t in range(length - 1, start_frame, -1):
+            if int(best_tokens[t]) != blank_token_id:
+                return t
+        return length - 1
+
+    def _decode_ctc_single_batch(
+        self,
+        predictions: mx.array,
+        length: int,
+    ) -> list[AlignedToken]:
+        """Decode a single batch using CTC decoding."""
+        best_tokens = mx.argmax(predictions, axis=1)
+        probs = mx.exp(predictions)
+        blank_token_id = len(self.vocabulary)
+
+        hypothesis: list[AlignedToken] = []
+        token_boundaries: list[tuple[int, None]] = []
+        prev_token = -1
+
+        for t, token_id in enumerate(best_tokens):
+            token_idx = int(token_id)
+
+            # Skip blank tokens and repeated tokens
+            if token_idx == blank_token_id or token_idx == prev_token:
+                continue
+
+            # Emit previous token if exists
+            if prev_token != -1:
+                start_frame = token_boundaries[-1][0]
+                hypothesis.append(
+                    self._create_ctc_token(prev_token, start_frame, t, probs)
+                )
+
+            token_boundaries.append((t, None))
+            prev_token = token_idx
+
+        # Handle final token
+        if prev_token != -1:
+            start_frame = token_boundaries[-1][0]
+            last_non_blank = self._find_last_non_blank_frame(best_tokens, start_frame, length)
+            hypothesis.append(
+                self._create_ctc_token(prev_token, start_frame, last_non_blank + 1, probs)
+            )
+
+        return hypothesis
+
     def decode(
         self,
         features: mx.array,
@@ -811,80 +920,7 @@ class ParakeetCTC(BaseParakeet):
         for batch in range(B):
             length = int(lengths[batch])
             predictions = logits[batch, :length]
-            best_tokens = mx.argmax(predictions, axis=1)
-
-            # Convert log probabilities to probabilities for confidence computation
-            probs = mx.exp(predictions)
-
-            hypothesis = []
-            token_boundaries = []
-            prev_token = -1
-
-            for t, token_id in enumerate(best_tokens):
-                token_idx = int(token_id)
-
-                if token_idx == len(self.vocabulary):
-                    continue
-
-                if token_idx == prev_token:
-                    continue
-
-                if prev_token != -1:
-                    token_start_time = token_boundaries[-1][0] * self.time_ratio
-                    token_end_time = t * self.time_ratio
-                    token_duration = token_end_time - token_start_time
-
-                    # Compute confidence using entropy-based method across token frames
-                    token_start_frame = token_boundaries[-1][0]
-                    token_end_frame = t
-                    token_probs = probs[token_start_frame:token_end_frame]
-
-                    vocab_size = len(self.vocabulary) + 1
-                    confidence = self._compute_confidence_from_probs(token_probs, vocab_size)
-
-                    hypothesis.append(
-                        AlignedToken(
-                            prev_token,
-                            start=token_start_time,
-                            duration=token_duration,
-                            confidence=confidence,
-                            text=tokenizer.decode([prev_token], self.vocabulary),
-                        )
-                    )
-
-                token_boundaries.append((t, None))
-                prev_token = token_idx
-
-            if prev_token != -1:
-                last_non_blank = length - 1
-                for t in range(length - 1, token_boundaries[-1][0], -1):
-                    if int(best_tokens[t]) != len(self.vocabulary):
-                        last_non_blank = t
-                        break
-
-                # Use time_ratio consistently
-                token_start_time = token_boundaries[-1][0] * self.time_ratio
-                token_end_time = (last_non_blank + 1) * self.time_ratio
-                token_duration = token_end_time - token_start_time
-
-                # Compute confidence for last token
-                token_start_frame = token_boundaries[-1][0]
-                token_end_frame = last_non_blank + 1
-                token_probs = probs[token_start_frame:token_end_frame]
-
-                vocab_size = len(self.vocabulary) + 1
-                confidence = self._compute_confidence_from_probs(token_probs, vocab_size)
-
-                hypothesis.append(
-                    AlignedToken(
-                        prev_token,
-                        start=token_start_time,
-                        duration=token_duration,
-                        confidence=confidence,
-                        text=tokenizer.decode([prev_token], self.vocabulary),
-                    )
-                )
-
+            hypothesis = self._decode_ctc_single_batch(predictions, length)
             results.append(hypothesis)
 
         return results

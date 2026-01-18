@@ -245,8 +245,8 @@ class TestToJson:
         
         token = data["sentences"][0]["tokens"][0]
         # Values should be rounded to 3 decimal places
-        assert token["start"] == 0.0
-        assert token["confidence"] == 0.95
+        assert token["start"] == pytest.approx(0.0)
+        assert token["confidence"] == pytest.approx(0.95)
 
 
 class TestEdgeCases:

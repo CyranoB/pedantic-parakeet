@@ -24,11 +24,11 @@ class TestAlignedToken:
 
     def test_end_computed_from_start_and_duration(self):
         token = make_token(1, "hello", start=1.0, duration=0.5)
-        assert token.end == 1.5
+        assert token.end == pytest.approx(1.5)
 
     def test_default_confidence(self):
         token = AlignedToken(id=1, text="test", start=0.0, duration=1.0)
-        assert token.confidence == 1.0
+        assert token.confidence == pytest.approx(1.0)
 
 
 class TestAlignedSentence:
@@ -40,9 +40,9 @@ class TestAlignedSentence:
             make_token(2, " world", 0.5, 0.5),
         ]
         sentence = AlignedSentence(text="Hello world", tokens=tokens)
-        assert sentence.start == 0.0
-        assert sentence.end == 1.0
-        assert sentence.duration == 1.0
+        assert sentence.start == pytest.approx(0.0)
+        assert sentence.end == pytest.approx(1.0)
+        assert sentence.duration == pytest.approx(1.0)
 
     def test_sentence_sorts_tokens_by_start(self):
         tokens = [
