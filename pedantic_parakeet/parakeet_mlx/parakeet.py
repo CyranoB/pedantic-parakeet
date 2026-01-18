@@ -113,6 +113,45 @@ class BaseParakeet(nn.Module):
             * self.preprocessor_config.hop_length
         )
 
+    def _compute_confidence(
+        self, token_logits: mx.array, vocab_size: int
+    ) -> float:
+        """Compute confidence score using entropy-based method."""
+        token_probs = mx.softmax(token_logits, axis=-1)
+        entropy = -mx.sum(token_probs * mx.log(token_probs + 1e-10), axis=-1)
+        max_entropy = mx.log(mx.array(vocab_size, dtype=token_probs.dtype))
+        return float(1.0 - (entropy / max_entropy))
+
+    def _compute_confidence_from_probs(
+        self, token_probs: mx.array, vocab_size: int
+    ) -> float:
+        """Compute confidence score from probabilities using entropy-based method."""
+        entropies = -mx.sum(token_probs * mx.log(token_probs + 1e-10), axis=-1)
+        avg_entropy = mx.mean(entropies)
+        max_entropy = mx.log(mx.array(vocab_size, dtype=token_probs.dtype))
+        return float(1.0 - (avg_entropy / max_entropy))
+
+    def _initialize_decode_params(
+        self,
+        features: mx.array,
+        lengths: Optional[mx.array],
+        last_token: Optional[list[Optional[int]]],
+        hidden_state: Optional[list[Optional[tuple[mx.array, mx.array]]]],
+    ) -> tuple[int, int, mx.array, list[Optional[int]], list[Optional[tuple[mx.array, mx.array]]]]:
+        """Initialize parameters for decoding."""
+        B, S, *_ = features.shape
+
+        if hidden_state is None:
+            hidden_state = list([None] * B)
+
+        if lengths is None:
+            lengths = mx.array([S] * B)
+
+        if last_token is None:
+            last_token = list([None] * B)
+
+        return B, S, lengths, last_token, hidden_state
+
     def generate(
         self, mel: mx.array, *, decoding_config: DecodingConfig = DecodingConfig()
     ) -> list[AlignedResult]:
@@ -338,16 +377,9 @@ class ParakeetTDT(BaseParakeet):
             def __hash__(self) -> int:
                 return hash((self.step, tuple((x.id for x in self.tokens))))
 
-        B, S, *_ = features.shape
-
-        if hidden_state is None:
-            hidden_state = list([None] * B)
-
-        if lengths is None:
-            lengths = mx.array([S] * B)
-
-        if last_token is None:
-            last_token = list([None] * B)
+        B, S, lengths, last_token, hidden_state = self._initialize_decode_params(
+            features, lengths, last_token, hidden_state
+        )
 
         results = []
         results_hidden = []
@@ -540,16 +572,9 @@ class ParakeetTDT(BaseParakeet):
     ) -> tuple[list[list[AlignedToken]], list[Optional[tuple[mx.array, mx.array]]]]:
         assert isinstance(config.decoding, Greedy)  # type guarntee
 
-        B, S, *_ = features.shape
-
-        if hidden_state is None:
-            hidden_state = list([None] * B)
-
-        if lengths is None:
-            lengths = mx.array([S] * B)
-
-        if last_token is None:
-            last_token = list([None] * B)
+        B, S, lengths, last_token, hidden_state = self._initialize_decode_params(
+            features, lengths, last_token, hidden_state
+        )
 
         results = []
         for batch in range(B):
@@ -587,12 +612,9 @@ class ParakeetTDT(BaseParakeet):
 
                 pred_token = int(mx.argmax(token_logits))
 
-                # compute confidence score using entropy-based method
-                token_probs = mx.softmax(token_logits, axis=-1)
+                # compute confidence score
                 vocab_size = len(self.vocabulary) + 1
-                entropy = -mx.sum(token_probs * mx.log(token_probs + 1e-10), axis=-1)
-                max_entropy = mx.log(mx.array(vocab_size, dtype=token_probs.dtype))
-                confidence = float(1.0 - (entropy / max_entropy))
+                confidence = self._compute_confidence(token_logits, vocab_size)
 
                 decision = int(
                     mx.argmax(joint_out[0, 0, :, len(self.vocabulary) + 1 :])
@@ -677,16 +699,9 @@ class ParakeetRNNT(BaseParakeet):
             "Only greedy decoding is supported for RNNT decoder now"
         )
 
-        B, S, *_ = features.shape
-
-        if hidden_state is None:
-            hidden_state = list([None] * B)
-
-        if lengths is None:
-            lengths = mx.array([S] * B)
-
-        if last_token is None:
-            last_token = list([None] * B)
+        B, S, lengths, last_token, hidden_state = self._initialize_decode_params(
+            features, lengths, last_token, hidden_state
+        )
 
         results = []
         for batch in range(B):
@@ -719,12 +734,9 @@ class ParakeetRNNT(BaseParakeet):
                 token_logits = joint_out[0, 0]
                 pred_token = int(mx.argmax(token_logits))
 
-                # compute confidence score using entropy-based method
-                token_probs = mx.softmax(token_logits, axis=-1)
+                # compute confidence score
                 vocab_size = len(self.vocabulary) + 1
-                entropy = -mx.sum(token_probs * mx.log(token_probs + 1e-10), axis=-1)
-                max_entropy = mx.log(mx.array(vocab_size, dtype=token_probs.dtype))
-                confidence = float(1.0 - (entropy / max_entropy))
+                confidence = self._compute_confidence(token_logits, vocab_size)
 
                 # rnnt decoding rule
                 if pred_token != len(self.vocabulary):
@@ -819,9 +831,7 @@ class ParakeetCTC(BaseParakeet):
 
                 if prev_token != -1:
                     token_start_time = token_boundaries[-1][0] * self.time_ratio
-
                     token_end_time = t * self.time_ratio
-
                     token_duration = token_end_time - token_start_time
 
                     # Compute confidence using entropy-based method across token frames
@@ -829,14 +839,8 @@ class ParakeetCTC(BaseParakeet):
                     token_end_frame = t
                     token_probs = probs[token_start_frame:token_end_frame]
 
-                    # Compute average entropy across frames
                     vocab_size = len(self.vocabulary) + 1
-                    entropies = -mx.sum(
-                        token_probs * mx.log(token_probs + 1e-10), axis=-1
-                    )
-                    avg_entropy = mx.mean(entropies)
-                    max_entropy = mx.log(mx.array(vocab_size, dtype=token_probs.dtype))
-                    confidence = float(1.0 - (avg_entropy / max_entropy))
+                    confidence = self._compute_confidence_from_probs(token_probs, vocab_size)
 
                     hypothesis.append(
                         AlignedToken(
@@ -858,20 +862,9 @@ class ParakeetCTC(BaseParakeet):
                         last_non_blank = t
                         break
 
-                token_start_time = (
-                    token_boundaries[-1][0]
-                    * self.encoder_config.subsampling_factor
-                    / self.preprocessor_config.sample_rate
-                    * self.preprocessor_config.hop_length
-                )
-
-                token_end_time = (
-                    (last_non_blank + 1)
-                    * self.encoder_config.subsampling_factor
-                    / self.preprocessor_config.sample_rate
-                    * self.preprocessor_config.hop_length
-                )
-
+                # Use time_ratio consistently
+                token_start_time = token_boundaries[-1][0] * self.time_ratio
+                token_end_time = (last_non_blank + 1) * self.time_ratio
                 token_duration = token_end_time - token_start_time
 
                 # Compute confidence for last token
@@ -880,10 +873,7 @@ class ParakeetCTC(BaseParakeet):
                 token_probs = probs[token_start_frame:token_end_frame]
 
                 vocab_size = len(self.vocabulary) + 1
-                entropies = -mx.sum(token_probs * mx.log(token_probs + 1e-10), axis=-1)
-                avg_entropy = mx.mean(entropies)
-                max_entropy = mx.log(mx.array(vocab_size, dtype=token_probs.dtype))
-                confidence = float(1.0 - (avg_entropy / max_entropy))
+                confidence = self._compute_confidence_from_probs(token_probs, vocab_size)
 
                 hypothesis.append(
                     AlignedToken(
