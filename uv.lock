@@ -842,9 +842,9 @@ wheels = [
 ]
 
 [[package]]
-name = "parakeet-mlx"
-version = "0.5.0"
-source = { registry = "https://pypi.org/simple" }
+name = "pedantic-parakeet"
+version = "0.1.0"
+source = { editable = "." }
 dependencies = [
     { name = "dacite" },
     { name = "huggingface-hub" },
@@ -852,19 +852,6 @@ dependencies = [
     { name = "mlx" },
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "numpy", version = "2.3.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
-    { name = "typer" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/f6/17/2527994bcb51f29ea94fa1cd92ca96e6c298f19d3a4c3396fe5ff837a40e/parakeet_mlx-0.5.0.tar.gz", hash = "sha256:b3aab979108b6b862d074ac0ddb8d0112d4bcb2a9995818de85a366abdc302be", size = 37562, upload-time = "2026-01-07T16:19:08.74Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/74/e9/faf19b3ec005646747ddab675fe58d32cc5447437ac243f5ff80860ae2ee/parakeet_mlx-0.5.0-py3-none-any.whl", hash = "sha256:6a4ebdcf18e64cec1e0579f28963f1b50afd174e7bd2ab2f3dd5737191417c03", size = 37113, upload-time = "2026-01-07T16:19:07.473Z" },
-]
-
-[[package]]
-name = "pedantic-parakeet"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "parakeet-mlx" },
     { name = "rich" },
     { name = "typer" },
 ]
@@ -877,7 +864,11 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "parakeet-mlx", specifier = ">=0.5.0" },
+    { name = "dacite" },
+    { name = "huggingface-hub" },
+    { name = "librosa" },
+    { name = "mlx", specifier = ">=0.21.0" },
+    { name = "numpy" },
     { name = "pytest", marker = "extra == 'dev'" },
     { name = "rich", specifier = ">=13.0.0" },
     { name = "ruff", marker = "extra == 'dev'" },

@@ -1,0 +1,120 @@
+Vendored from parakeet-mlx (pip)
+Source: https://github.com/senstella/parakeet-mlx
+License: Apache 2.0 (see LICENSE file in this directory)
+
+================================================================================
+MODIFICATIONS FROM UPSTREAM
+================================================================================
+
+This directory contains a vendored copy of parakeet-mlx with the following
+modifications for the pedantic-parakeet project.
+
+## Feature Additions
+
+### Language Bias Support
+- Added `language_bias` field to `DecodingConfig` dataclass
+- Added `_apply_language_bias()` method to `ParakeetTDT` class
+- Integrated bias application in `decode_greedy()` and `decode_beam()` methods
+- Allows suppressing common English words when transcribing non-English audio
+
+## Import Changes
+- Converted 15 absolute imports to relative imports for proper package structure
+
+## Code Quality Refactoring
+
+The following changes improve code maintainability without changing functionality.
+All changes verified through comprehensive testing (101 tests) and transcription
+output comparison.
+
+### parakeet.py
+Reduced cognitive complexity through helper method extraction:
+
+**BaseParakeet class:**
+- `_compute_confidence()` - Calculate confidence from logits
+- `_compute_confidence_from_probs()` - Calculate confidence from probabilities  
+- `_initialize_decode_params()` - Initialize decode parameters with defaults
+
+**ParakeetTDT class:**
+- `_run_decoder_joint_pass()` - Run decoder and joint network forward pass
+- `_apply_language_bias()` - Apply language bias to token logits
+- `_handle_stuck_prevention()` - Handle stuck prevention logic in greedy decode
+- `_decode_greedy_single_batch()` - Decode single batch with greedy strategy
+- `_get_top_k_indices()` - Get top-k token/duration indices for beam search
+- `_compute_beam_step_update()` - Compute step and stuck counter updates
+- `_compute_hypothesis_score()` - Compute hypothesis score with duration reward
+- `_merge_hypothesis_scores()` - Merge hypothesis scores in beam candidates
+- `_select_best_hypothesis()` - Select best hypothesis with length penalty
+- `_create_beam_token()` - Create AlignedToken for beam search
+- `_expand_hypothesis()` - Expand hypothesis with new token/duration
+- `_process_beam_hypothesis()` - Process single hypothesis, generate expansions
+
+**ParakeetCTC class:**
+- `_decode_ctc_single_batch()` - Decode single batch with CTC strategy
+
+**Other changes:**
+- Moved `Hypothesis` dataclass outside `decode_beam` function
+- Renamed field `hypothesis` to `hyp_tokens` to avoid class name conflict
+- Replaced unused variables with `_` (e.g., `B, S = features.shape[:2]` → `B, _ = ...`)
+
+### alignment.py
+Extracted helper functions to reduce complexity:
+
+- `_compute_lcs_matrix()` - Compute longest common subsequence matrix
+- `_backtrack_lcs()` - Backtrack through LCS matrix to find common tokens
+- `_find_word_break_tokens()` - Find tokens representing word breaks
+- `_compute_lcg_matrix()` - Compute longest contiguous group matrix
+- `_backtrack_lcg()` - Backtrack through LCG matrix
+- `_collect_segment_tokens()` - Collect tokens for a segment
+- `_create_sentence_from_segment()` - Create AlignedSentence from segment data
+- `_process_segments()` - Process all segments into sentences
+- Removed redundant `str()` calls
+
+### attention.py
+Variable naming convention fixes:
+- `Tq` → `t_q` (query sequence length)
+- `S_q` → `s_q`, `S_k` → `_` (unused), `S_p` → `s_p`, `S_v` → `_` (unused)
+- `K_rel` → `k_rel`, `D_v` → `d_v`
+
+### audio.py
+- Removed unused parameters (`dtype`, `axis`)
+- Merged nested if statements
+- Extracted nested ternary into `_determine_pad_mode()` function
+- Renamed `bytes` variable to `audio_bytes` (avoid shadowing builtin)
+- Fixed floating-point equality check
+
+### cli.py
+Extracted helper functions:
+
+- `_format_timestamp_srt()` - Format timestamp for SRT format
+- `_format_timestamp_vtt()` - Format timestamp for VTT format
+- `_create_subtitle_entry()` - Create a single subtitle entry
+- `_process_sentence_tokens()` - Process tokens for word highlighting
+- `_build_highlighted_text()` - Build text with word highlighting
+- `_create_srt_entries()` - Create all SRT entries for a result
+- `_create_vtt_entries()` - Create all VTT entries for a result
+- `_load_model()` - Load and configure model
+- `_get_formatters()` - Get output formatters based on options
+- `_resolve_output_formats()` - Resolve which formats to generate
+- `_print_verbose_setup()` - Print verbose setup information
+- `_create_decoding_config()` - Create decoding configuration
+- `_process_audio_files()` - Process all audio files
+- Fixed unused return value from `str.strip()`
+- Fixed lambda capture issue with loop variable
+
+### conformer.py
+- Removed commented-out code
+- Extracted nested ternary expressions into helper functions
+- Addressed TODO comment
+
+================================================================================
+VERIFICATION
+================================================================================
+
+All modifications have been verified to produce identical transcription output
+through before/after comparison testing with multiple audio files.
+
+Test suite: 101 tests passing
+- tests/test_alignment.py (30 tests)
+- tests/test_cli.py (31 tests)  
+- tests/test_parakeet.py (30 tests)
+- tests/test_language_bias.py (10 tests)
