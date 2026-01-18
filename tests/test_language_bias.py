@@ -21,10 +21,10 @@ def test_english_suppression():
     vocab = ["▁le", "▁the", "▁la"]
     bias = build_language_bias(vocab, "fr", 0.5)
     # "▁the" is at index 1 and should be suppressed
-    assert float(bias[1]) == -0.5
+    assert abs(float(bias[1]) - (-0.5)) < 1e-6
     # French words should not be suppressed
-    assert float(bias[0]) == 0.0
-    assert float(bias[2]) == 0.0
+    assert abs(float(bias[0]) - 0.0) < 1e-6
+    assert abs(float(bias[2]) - 0.0) < 1e-6
 
 
 def test_bias_strength():
@@ -33,8 +33,8 @@ def test_bias_strength():
     bias_05 = build_language_bias(vocab, "fr", 0.5)
     bias_10 = build_language_bias(vocab, "fr", 1.0)
 
-    assert float(bias_05[0]) == -0.5
-    assert float(bias_10[0]) == -1.0
+    assert abs(float(bias_05[0]) - (-0.5)) < 1e-6
+    assert abs(float(bias_10[0]) - (-1.0)) < 1e-6
 
 
 def test_unsupported_language_raises():
@@ -62,8 +62,8 @@ def test_boundary_strength_values():
     bias_zero = build_language_bias(vocab, "fr", 0.0)
     bias_max = build_language_bias(vocab, "fr", 2.0)
 
-    assert float(bias_zero[0]) == 0.0
-    assert float(bias_max[0]) == -2.0
+    assert abs(float(bias_zero[0]) - 0.0) < 1e-6
+    assert abs(float(bias_max[0]) - (-2.0)) < 1e-6
 
 
 def test_supported_languages():

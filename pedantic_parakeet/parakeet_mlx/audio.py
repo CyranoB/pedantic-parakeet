@@ -48,9 +48,7 @@ class PreprocessArgs:
 
 
 # thanks to mlx-whisper too!
-def load_audio(
-    filename: Path, sampling_rate: int, dtype: mx.Dtype = mx.bfloat16
-) -> mx.array:
+def load_audio(filename: Path, sampling_rate: int) -> mx.array:
     if shutil.which("ffmpeg") is None:
         raise RuntimeError("FFmpeg is not installed or not in your PATH.")
 
@@ -98,7 +96,7 @@ def bartlett(size):
 
 
 def stft(
-    x, n_fft, hop_length=None, win_length=None, window=None, axis=-1, pad_mode="reflect"
+    x, n_fft, hop_length=None, win_length=None, window=None, pad_mode="reflect"
 ):
     if win_length is None:
         win_length = n_fft
@@ -137,30 +135,30 @@ def stft(
 def get_logmel(x: mx.array, args: PreprocessArgs) -> mx.array:
     original_dtype = x.dtype
 
-    if args.pad_to > 0:
-        if x.shape[-1] < args.pad_to:
-            pad_length = args.pad_to - x.shape[-1]
-            x = mx.pad(x, ((0, pad_length),), constant_values=args.pad_value)
+    if args.pad_to > 0 and x.shape[-1] < args.pad_to:
+        pad_length = args.pad_to - x.shape[-1]
+        x = mx.pad(x, ((0, pad_length),), constant_values=args.pad_value)
 
     if args.preemph is not None:
         x = mx.concat([x[:1], x[1:] - args.preemph * x[:-1]], axis=0)
 
-    window = (
-        hanning(args.win_length).astype(x.dtype)
-        if args.window == "hann" or args.window == "hanning"
-        else hamming(args.win_length).astype(x.dtype)
-        if args.window == "hamming"
-        else blackman(args.win_length).astype(x.dtype)
-        if args.window == "blackman"
-        else bartlett(args.win_length).astype(x.dtype)
-        if args.window == "bartlett"
-        else None
-    )
+    # Determine window type
+    if args.window == "hann" or args.window == "hanning":
+        window = hanning(args.win_length).astype(x.dtype)
+    elif args.window == "hamming":
+        window = hamming(args.win_length).astype(x.dtype)
+    elif args.window == "blackman":
+        window = blackman(args.win_length).astype(x.dtype)
+    elif args.window == "bartlett":
+        window = bartlett(args.win_length).astype(x.dtype)
+    else:
+        window = None
+    
     x = stft(x, args.n_fft, args.hop_length, args.win_length, window)
-    abs = mx.abs(mx.view(x, original_dtype))
-    x = abs[..., ::2] + abs[..., 1::2]
+    abs_val = mx.abs(mx.view(x, original_dtype))
+    x = abs_val[..., ::2] + abs_val[..., 1::2]
 
-    if args.mag_power != 1.0:
+    if abs(args.mag_power - 1.0) > 1e-9:
         x = mx.power(x, args.mag_power)
 
     x = mx.matmul(args._filterbanks.astype(x.dtype), x.T)

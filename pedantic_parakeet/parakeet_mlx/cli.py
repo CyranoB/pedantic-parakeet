@@ -75,7 +75,7 @@ def to_srt(result: AlignedResult, highlight_words: bool = False) -> str:
                         )
                     else:
                         text += inner_token.text
-                text.strip()
+                text = text.strip()
 
                 srt_content.append(f"{entry_index}")
                 srt_content.append(f"{start_time} --> {end_time}")
@@ -415,7 +415,7 @@ def transcribe(
                     dtype=bfloat16 if not fp32 else float32,
                     chunk_duration=chunk_duration if chunk_duration != 0 else None,
                     overlap_duration=overlap_duration,
-                    chunk_callback=lambda current, full: progress.update(
+                    chunk_callback=lambda current, full, i=i: progress.update(
                         task, total=total_files * full, completed=full * i + current
                     ),
                     decoding_config=decoding_config,

@@ -26,7 +26,7 @@ class AlignedSentence:
     confidence: float = 1.0  # aggregate confidence score
 
     def __post_init__(self) -> None:
-        self.tokens = list(sorted(self.tokens, key=lambda x: x.start))
+        self.tokens = sorted(self.tokens, key=lambda x: x.start)
         self.start = self.tokens[0].start
         self.end = self.tokens[-1].end
         self.duration = self.end - self.start

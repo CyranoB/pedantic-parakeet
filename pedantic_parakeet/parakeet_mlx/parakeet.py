@@ -163,7 +163,7 @@ class BaseParakeet(nn.Module):
             AlignedResult: Transcription result with aligned tokens and sentences.
         """
         audio_path = Path(path)
-        audio_data = load_audio(audio_path, self.preprocessor_config.sample_rate, dtype)
+        audio_data = load_audio(audio_path, self.preprocessor_config.sample_rate)
 
         if chunk_duration is None:
             mel = get_logmel(audio_data, self.preprocessor_config)
@@ -333,10 +333,10 @@ class ParakeetTDT(BaseParakeet):
             last_token: Optional[int]
             hidden_state: Optional[tuple[mx.array, mx.array]]
             stuck: int
-            hypothesis: list[AlignedToken]
+            tokens: list[AlignedToken]
 
             def __hash__(self) -> int:
-                return hash((self.step, tuple((x.id for x in self.hypothesis))))
+                return hash((self.step, tuple((x.id for x in self.tokens))))
 
         B, S, *_ = features.shape
 
@@ -363,7 +363,7 @@ class ParakeetTDT(BaseParakeet):
                     last_token=last_token[batch],
                     hidden_state=hidden_state[batch],
                     stuck=0,
-                    hypothesis=[],
+                    tokens=[],
                 )
             ]
 
@@ -450,10 +450,10 @@ class ParakeetTDT(BaseParakeet):
                                 if is_blank
                                 else decoder_hidden,
                                 stuck=stuck,
-                                hypothesis=hypothesis.hypothesis
+                                tokens=hypothesis.tokens
                                 if is_blank
                                 else (
-                                    list(hypothesis.hypothesis)
+                                    list(hypothesis.tokens)
                                     + [
                                         AlignedToken(
                                             id=token,
@@ -515,16 +515,16 @@ class ParakeetTDT(BaseParakeet):
                 results.append([])
                 results_hidden.append(hidden_state[batch])
             else:
-                length_penalty = (
+                beam_length_penalty = (
                     config.decoding.length_penalty
                 )  # mypy assumes weirdly so we go in safe way
 
                 best = max(
                     finished_hypothesis,
-                    key=lambda x: x.score
-                    / (max(1, len(x.hypothesis)) ** length_penalty),
+                    key=lambda x, penalty=beam_length_penalty: x.score
+                    / (max(1, len(x.tokens)) ** penalty),
                 )
-                results.append(best.hypothesis)
+                results.append(best.tokens)
                 results_hidden.append(best.hidden_state)
 
         return results, results_hidden
@@ -790,7 +790,7 @@ class ParakeetCTC(BaseParakeet):
         config: DecodingConfig = DecodingConfig(),
     ) -> list[list[AlignedToken]]:
         """Run CTC decoder with features and lengths. Outputs list[list[AlignedToken]]."""
-        B, S, *_ = features.shape
+        B, _, *_ = features.shape
 
         logits = self.decoder(features)
         mx.eval(logits, lengths)

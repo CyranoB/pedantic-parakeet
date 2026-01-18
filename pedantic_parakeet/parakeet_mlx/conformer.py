@@ -84,7 +84,6 @@ class Convolution(nn.Module):
         )
 
     def __call__(self, x: mx.array, cache=None) -> mx.array:
-        # x = x.swapaxes(1, 2)
 
         x = self.pointwise_conv1(x)
         x = nn.glu(x, axis=2)  # might make it variable later
@@ -114,32 +113,36 @@ class ConformerBlock(nn.Module):
         self.feed_forward1 = FeedForward(args.d_model, ff_hidden_dim, args.use_bias)
 
         self.norm_self_att = nn.LayerNorm(args.d_model)
-        self.self_attn = (
-            RelPositionMultiHeadAttention(
+        
+        # Determine which attention model to use
+        if args.self_attention_model == "rel_pos":
+            self.self_attn = RelPositionMultiHeadAttention(
                 args.n_heads,
                 args.d_model,
                 bias=args.use_bias,
                 pos_bias_u=args.pos_bias_u,
                 pos_bias_v=args.pos_bias_v,
             )
-            if args.self_attention_model == "rel_pos"
-            else RelPositionMultiHeadLocalAttention(
-                args.n_heads,
-                args.d_model,
-                bias=args.use_bias,
-                pos_bias_u=args.pos_bias_u,
-                pos_bias_v=args.pos_bias_v,
-                context_size=(args.att_context_size[0], args.att_context_size[1])
+        elif args.self_attention_model == "rel_pos_local_attn":
+            context_size = (
+                (args.att_context_size[0], args.att_context_size[1])
                 if args.att_context_size is not None
-                else (-1, -1),
+                else (-1, -1)
             )
-            if args.self_attention_model == "rel_pos_local_attn"
-            else MultiHeadAttention(
+            self.self_attn = RelPositionMultiHeadLocalAttention(
+                args.n_heads,
+                args.d_model,
+                bias=args.use_bias,
+                pos_bias_u=args.pos_bias_u,
+                pos_bias_v=args.pos_bias_v,
+                context_size=context_size,
+            )
+        else:
+            self.self_attn = MultiHeadAttention(
                 args.n_heads,
                 args.d_model,
                 bias=True,
             )
-        )
 
         self.norm_conv = nn.LayerNorm(args.d_model)
         self.conv = Convolution(args)
@@ -154,30 +157,30 @@ class ConformerBlock(nn.Module):
         name: Literal["rel_pos", "rel_pos_local_attn", "normal"],
         context_size: Optional[tuple[int, int]] = (256, 256),
     ):
-        new_attn = (
-            RelPositionMultiHeadAttention(
+        if name == "rel_pos":
+            new_attn = RelPositionMultiHeadAttention(
                 self.args.n_heads,
                 self.args.d_model,
                 bias=self.args.use_bias,
                 pos_bias_u=self.args.pos_bias_u,
                 pos_bias_v=self.args.pos_bias_v,
             )
-            if name == "rel_pos"
-            else RelPositionMultiHeadLocalAttention(
+        elif name == "rel_pos_local_attn":
+            ctx_size = context_size if context_size is not None else (-1, -1)
+            new_attn = RelPositionMultiHeadLocalAttention(
                 self.args.n_heads,
                 self.args.d_model,
                 bias=self.args.use_bias,
                 pos_bias_u=self.args.pos_bias_u,
                 pos_bias_v=self.args.pos_bias_v,
-                context_size=context_size if context_size is not None else (-1, -1),
+                context_size=ctx_size,
             )
-            if name == "rel_pos_local_attn"
-            else MultiHeadAttention(
+        else:
+            new_attn = MultiHeadAttention(
                 self.args.n_heads,
                 self.args.d_model,
                 bias=True,
             )
-        )
 
         new_attn.load_weights(tree_flatten(self.self_attn.parameters()))
 
@@ -316,8 +319,7 @@ class DwStridingSubsampling(nn.Module):
             if need_to_split:
                 x, success = self.conv_split_by_batch(x)
                 if not success:
-                    # TODO: Add channel splitting
-                    x = self.conv_forward(x)  # try anyways
+                    x = self.conv_forward(x)  # fallback: try without splitting
             else:
                 x = self.conv_forward(x)
         else:
