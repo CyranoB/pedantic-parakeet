@@ -20,6 +20,8 @@ pedantic-parakeet = "pedantic_parakeet.cli:app"
 
 [project.optional-dependencies]
 dev = ["pytest", "ruff"]
+mlx-audio = ["mlx-audio>=0.2.5"]
+all = ["mlx-audio>=0.2.5"]
 
 [build-system]
 requires = ["hatchling"]
