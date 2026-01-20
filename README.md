@@ -20,6 +20,11 @@ Or install from PyPI (coming soon):
 pip install pedantic-parakeet
 ```
 
+**Optional: mlx-audio backend** (for Whisper and other models):
+```bash
+pip install pedantic-parakeet[mlx-audio]
+```
+
 **System requirement**: `ffmpeg` must be installed (`brew install ffmpeg`)
 
 ## Usage
@@ -44,6 +49,51 @@ pedantic-parakeet ./lectures/ --dry-run
 # Verbose mode
 pedantic-parakeet ./lectures/ -v
 ```
+
+## Backend Selection
+
+Pedantic Parakeet supports multiple transcription backends. Use `--list-models` to see available models:
+
+```bash
+pedantic-parakeet --list-models
+```
+
+### Parakeet Backend (default)
+
+The default backend uses the vendored Parakeet TDT implementation, optimized for Apple Silicon:
+
+```bash
+# Use default Parakeet v3 model
+pedantic-parakeet audio.mp3
+
+# Use model alias
+pedantic-parakeet audio.mp3 --model parakeet
+```
+
+### mlx-audio Backend
+
+For additional models like Whisper and Voxtral, install the optional mlx-audio dependency:
+
+```bash
+pip install pedantic-parakeet[mlx-audio]
+
+# Use Whisper Turbo (100+ languages)
+pedantic-parakeet audio.mp3 --model whisper-turbo
+
+# Or use full model ID
+pedantic-parakeet audio.mp3 --model mlx-community/whisper-large-v3-turbo-asr-fp16
+```
+
+### Model Notes
+
+| Model | Timestamps | Language Support | Notes |
+|-------|------------|------------------|-------|
+| parakeet (default) | ✓ | Bias suppression | Best accuracy, English-optimized |
+| parakeet-v2 | ✓ | - | Previous version via mlx-audio |
+| whisper-turbo | ✓ | Language hint | Fast, 100+ languages |
+| voxtral | ✗ | Language hint | LLM-based, text-only (use `--format txt`) |
+
+**Note:** Voxtral does not provide timestamps. Use `--format txt` only.
 
 ## Language Bias (Experimental)
 

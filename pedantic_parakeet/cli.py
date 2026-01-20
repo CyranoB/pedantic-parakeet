@@ -10,6 +10,8 @@ from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskPr
 
 from . import __version__
 from .audio import discover_audio_files, check_ffmpeg, SUPPORTED_EXTENSIONS
+from .backends.base import Backend
+from .backends.registry import list_models, resolve_model
 from .formatters import FORMATTERS, EXTENSIONS, format_txt
 from .language_bias import SUPPORTED_LANGUAGES
 from .transcriber import Transcriber, DEFAULT_MODEL
@@ -42,6 +44,103 @@ def version_callback(value: bool) -> None:
     if value:
         console.print(f"transcribe {__version__}")
         raise typer.Exit()
+
+
+def list_models_callback(value: bool) -> None:
+    """Print curated models and exit."""
+    if value:
+        console.print("[bold]Supported Models:[/bold]\n")
+        for model in list_models():
+            timestamps = "[green]✓[/green]" if model.capabilities.supports_timestamps else "[red]✗[/red]"
+            console.print(f"  [cyan]{model.model_id}[/cyan]")
+            console.print(f"    Backend: {model.backend}")
+            console.print(f"    Timestamps: {timestamps}")
+            if model.aliases:
+                console.print(f"    Aliases: {', '.join(model.aliases)}")
+            console.print(f"    {model.description}")
+            console.print()
+        raise typer.Exit()
+
+
+def _validate_format_capabilities(formats: list[str], model_id: str) -> None:
+    """Validate that requested formats are supported by the model.
+
+    Args:
+        formats: List of requested output formats.
+        model_id: The model ID or alias to check.
+
+    Raises:
+        typer.BadParameter: If model doesn't support timestamps but timed formats requested.
+    """
+    # Formats that require timestamps
+    timed_formats = {"srt", "vtt", "json"}
+    requested_timed = set(formats) & timed_formats
+
+    if not requested_timed:
+        return  # No timed formats requested, no validation needed
+
+    try:
+        model_info = resolve_model(model_id)
+        if not model_info.capabilities.supports_timestamps:
+            raise typer.BadParameter(
+                f"Model '{model_id}' does not support timestamps. "
+                f"Cannot use formats: {', '.join(sorted(requested_timed))}. "
+                f"Use --format txt instead, or choose a different model (see --list-models).",
+                param_hint="--format",
+            )
+    except ValueError:
+        # Unknown model - let it pass, Transcriber will handle it
+        pass
+
+
+def _validate_language_capabilities(
+    language: str | None,
+    language_strength: float,
+    model_id: str,
+) -> None:
+    """Validate that language options are supported by the model.
+
+    Args:
+        language: Target language code or None.
+        language_strength: Bias strength value.
+        model_id: The model ID or alias to check.
+
+    Raises:
+        typer.BadParameter: If model doesn't support requested language features.
+    """
+    if language is None and language_strength == 0.5:
+        return  # No language options used
+
+    try:
+        model_info = resolve_model(model_id)
+        caps = model_info.capabilities
+
+        # Check language_strength with models that don't support language bias
+        if language_strength != 0.5 and not caps.supports_language_bias:
+            supported_models = [
+                m.model_id for m in list_models()
+                if m.capabilities.supports_language_bias
+            ]
+            raise typer.BadParameter(
+                f"Model '{model_id}' does not support --language-strength. "
+                f"Models with language bias support: {', '.join(supported_models)}",
+                param_hint="--language-strength",
+            )
+
+        # Check language option with models that support neither bias nor hint
+        if language and not caps.supports_language_bias and not caps.supports_language_hint:
+            supported_models = [
+                m.model_id for m in list_models()
+                if m.capabilities.supports_language_bias or m.capabilities.supports_language_hint
+            ]
+            raise typer.BadParameter(
+                f"Model '{model_id}' does not support --language. "
+                f"Models with language support: {', '.join(supported_models)}",
+                param_hint="--language",
+            )
+    except ValueError:
+        # Unknown model - let it pass, Transcriber will handle it
+        pass
 
 
 def _write_outputs(
@@ -255,9 +354,25 @@ def main(
         str,
         typer.Option(
             "--model", "-m",
-            help="HuggingFace model ID",
+            help="HuggingFace model ID or alias (see --list-models)",
         ),
     ] = DEFAULT_MODEL,
+    backend: Annotated[
+        str | None,
+        typer.Option(
+            "--backend", "-b",
+            help="Backend: parakeet or mlx-audio (auto-detected from model by default)",
+        ),
+    ] = None,
+    list_models_flag: Annotated[
+        bool | None,
+        typer.Option(
+            "--list-models",
+            callback=list_models_callback,
+            is_eager=True,
+            help="List supported models and exit",
+        ),
+    ] = None,
     chunk_duration: Annotated[
         float,
         typer.Option(
@@ -314,6 +429,12 @@ def main(
     # Parse formats
     formats = parse_formats(format)
 
+    # Validate format capabilities BEFORE instantiating backend
+    _validate_format_capabilities(formats, model)
+
+    # Validate language capabilities BEFORE instantiating backend
+    _validate_language_capabilities(language, language_strength, model)
+
     # Discover audio files
     audio_files = discover_audio_files(inputs, recursive=recursive)
 
@@ -335,12 +456,24 @@ def main(
     if not check_ffmpeg():
         _check_ffmpeg_warning(err_console)
 
+    # Parse backend option
+    backend_enum: Backend | None = None
+    if backend:
+        try:
+            backend_enum = Backend(backend)
+        except ValueError:
+            raise typer.BadParameter(
+                f"Invalid backend '{backend}'. Must be one of: parakeet, mlx-audio",
+                param_hint="--backend",
+            )
+
     # Initialize transcriber (loads model)
     if verbose:
         console.print(f"[dim]Loading model: {model}...[/dim]")
 
     transcriber = Transcriber(
         model_id=model,
+        backend=backend_enum,
         chunk_duration=chunk_duration,
         language=language,
         language_strength=language_strength,
