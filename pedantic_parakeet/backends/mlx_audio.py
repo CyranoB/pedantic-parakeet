@@ -34,6 +34,86 @@ def _check_mlx_audio_available() -> bool:
     return _mlx_audio_available
 
 
+def _load_whisper_model(model_id: str) -> Any:
+    """Load a Whisper model with config filtering workaround.
+
+    mlx-audio 0.2.10 has a bug where it passes all HuggingFace config keys
+    to ModelDimensions, but ModelDimensions only accepts specific keys.
+    This function works around that by filtering the config.
+
+    Args:
+        model_id: HuggingFace model ID.
+
+    Returns:
+        Loaded Whisper model.
+    """
+    import json
+    from pathlib import Path
+
+    import mlx.core as mx
+    from huggingface_hub import snapshot_download
+    from mlx.utils import tree_unflatten
+
+    from mlx_audio.stt.models.whisper.whisper import Model, ModelDimensions
+
+    # Download model if needed
+    model_path = Path(snapshot_download(repo_id=model_id))
+
+    # Load and filter config
+    with open(model_path / "config.json") as f:
+        config = json.load(f)
+
+    # Map HuggingFace config keys to ModelDimensions keys
+    # HuggingFace uses different naming than mlx-audio expects
+    model_args = ModelDimensions(
+        n_mels=config.get("num_mel_bins", 128),
+        n_audio_ctx=config.get("max_source_positions", 1500),
+        n_audio_state=config.get("d_model", 1280),
+        n_audio_head=config.get("encoder_attention_heads", 20),
+        n_audio_layer=config.get("encoder_layers", 32),
+        n_vocab=config.get("vocab_size", 51866),
+        n_text_ctx=config.get("max_target_positions", 448),
+        n_text_state=config.get("d_model", 1280),
+        n_text_head=config.get("decoder_attention_heads", 20),
+        n_text_layer=config.get("decoder_layers", 4),
+    )
+
+    # Load weights - try different filenames
+    weight_files = ["weights.safetensors", "model.safetensors", "weights.npz"]
+    wf = None
+    for name in weight_files:
+        candidate = model_path / name
+        if candidate.exists():
+            wf = candidate
+            break
+
+    if wf is None:
+        raise FileNotFoundError(
+            f"No weight file found in {model_path}. "
+            f"Tried: {', '.join(weight_files)}"
+        )
+
+    weights = mx.load(str(wf))
+
+    # Create model
+    quantization = config.get("quantization")
+    model = Model(model_args, mx.float16)
+
+    if quantization is not None:
+        import mlx.nn as nn
+
+        class_predicate = (
+            lambda p, m: isinstance(m, (nn.Linear, nn.Embedding))
+            and f"{p}.scales" in weights
+        )
+        nn.quantize(model, **quantization, class_predicate=class_predicate)
+
+    weights = tree_unflatten(list(weights.items()))
+    model.update(weights)
+    mx.eval(model.parameters())
+    return model
+
+
 def is_mlx_audio_available() -> bool:
     """Check if mlx-audio is installed and available.
 
@@ -111,9 +191,13 @@ class MlxAudioBackend:
     def _load_model(self) -> Any:
         """Lazy load the model on first use."""
         if self._model is None:
-            from mlx_audio.stt.utils import load_model
+            # Use custom loader for Whisper models to work around mlx-audio config bug
+            if "whisper" in self._model_id.lower():
+                self._model = _load_whisper_model(self._model_id)
+            else:
+                from mlx_audio.stt.utils import load_model
 
-            self._model = load_model(self._model_id)
+                self._model = load_model(self._model_id)
         return self._model
 
     def _build_generate_kwargs(self) -> dict[str, Any]:
