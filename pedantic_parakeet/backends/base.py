@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 if TYPE_CHECKING:
     from pathlib import Path
     from collections.abc import Callable
-    from ..transcriber import TranscriptionResult
+    from ..types import TranscriptionResult
 
 
 class Backend(str, Enum):
