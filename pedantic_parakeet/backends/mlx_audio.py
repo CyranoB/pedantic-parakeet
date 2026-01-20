@@ -342,6 +342,20 @@ class MlxAudioBackend:
         kwargs = self._build_generate_kwargs()
 
         # Run transcription
-        result = model.generate(str(audio_path), **kwargs)
+        try:
+            result = model.generate(str(audio_path), **kwargs)
+        except Exception as exc:
+            error_message = str(exc)
+            if (
+                "Format not recognised" in error_message
+                and "whisper" in self._model_id.lower()
+                and isinstance(audio_path, (Path, str))
+            ):
+                from ..parakeet_mlx.audio import load_audio as ffmpeg_load_audio
+
+                audio_data = ffmpeg_load_audio(Path(audio_path), 16000)
+                result = model.generate(audio_data, **kwargs)
+            else:
+                raise
 
         return self._convert_result(result, str(audio_path))
