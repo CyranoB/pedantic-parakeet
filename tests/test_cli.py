@@ -19,6 +19,7 @@ from pedantic_parakeet.cli import (
     app,
     _validate_format_capabilities,
     _validate_language_capabilities,
+    _validate_backend_availability,
 )
 
 
@@ -427,3 +428,47 @@ class TestLanguageValidation:
         """Unknown model IDs should pass language validation."""
         # Should not raise - unknown models are allowed through
         _validate_language_capabilities("fr", 1.5, "unknown/model-id")
+
+
+class TestBackendAvailabilityValidation:
+    """Tests for backend availability validation before backend instantiation."""
+
+    def test_mlx_audio_model_without_mlx_audio_raises_error(self):
+        """mlx-audio model without mlx-audio installed should error early."""
+        import typer
+        from pedantic_parakeet.backends.mlx_audio import is_mlx_audio_available
+
+        if is_mlx_audio_available():
+            pytest.skip("mlx-audio is installed, cannot test missing dependency error")
+
+        with pytest.raises(typer.BadParameter) as exc_info:
+            _validate_backend_availability("whisper", None)
+
+        error_msg = str(exc_info.value)
+        assert "requires the mlx-audio backend" in error_msg
+        assert "pip install" in error_msg
+
+    def test_explicit_mlx_audio_backend_without_mlx_audio_raises_error(self):
+        """Explicit --backend mlx-audio without mlx-audio installed should error."""
+        import typer
+        from pedantic_parakeet.backends.mlx_audio import is_mlx_audio_available
+
+        if is_mlx_audio_available():
+            pytest.skip("mlx-audio is installed, cannot test missing dependency error")
+
+        with pytest.raises(typer.BadParameter) as exc_info:
+            _validate_backend_availability("parakeet", "mlx-audio")
+
+        error_msg = str(exc_info.value)
+        assert "requires the mlx-audio backend" in error_msg
+
+    def test_parakeet_model_passes_without_mlx_audio(self):
+        """Parakeet model should pass validation regardless of mlx-audio."""
+        # Should not raise - Parakeet doesn't need mlx-audio
+        _validate_backend_availability("parakeet", None)
+
+    def test_unknown_model_with_parakeet_backend_passes(self):
+        """Unknown model with explicit parakeet backend should pass."""
+        # Should not raise - explicit parakeet backend doesn't need mlx-audio
+        _validate_backend_availability("unknown/model", "parakeet")
+

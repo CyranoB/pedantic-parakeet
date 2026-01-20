@@ -34,6 +34,15 @@ def _check_mlx_audio_available() -> bool:
     return _mlx_audio_available
 
 
+def is_mlx_audio_available() -> bool:
+    """Check if mlx-audio is installed and available.
+
+    Returns:
+        True if mlx-audio can be imported, False otherwise.
+    """
+    return _check_mlx_audio_available()
+
+
 class MlxAudioBackend:
     """Backend implementation for mlx-audio models.
 
@@ -62,7 +71,7 @@ class MlxAudioBackend:
         if not _check_mlx_audio_available():
             raise RuntimeError(
                 "mlx-audio is required for this backend but not installed. "
-                "Install with: pip install pedantic-parakeet[mlx-audio]"
+                "Install with: pip install 'pedantic-parakeet[mlx-audio]'"
             )
 
         self._model_id = model_id

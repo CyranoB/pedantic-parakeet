@@ -11,6 +11,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskPr
 from . import __version__
 from .audio import discover_audio_files, check_ffmpeg, SUPPORTED_EXTENSIONS
 from .backends.base import Backend
+from .backends.mlx_audio import is_mlx_audio_available
 from .backends.registry import list_models, resolve_model
 from .formatters import FORMATTERS, EXTENSIONS, format_txt
 from .language_bias import SUPPORTED_LANGUAGES
@@ -141,6 +142,35 @@ def _validate_language_capabilities(
     except ValueError:
         # Unknown model - let it pass, Transcriber will handle it
         pass
+
+
+def _validate_backend_availability(model_id: str, backend: str | None) -> None:
+    """Validate that required backend is available.
+
+    Args:
+        model_id: The model ID or alias to check.
+        backend: Explicit backend override, or None for auto-detection.
+
+    Raises:
+        typer.BadParameter: If model requires mlx-audio but it's not installed.
+    """
+    try:
+        model_info = resolve_model(model_id)
+        requires_mlx_audio = model_info.backend == Backend.MLX_AUDIO
+    except ValueError:
+        # Unknown model - check if explicit backend is mlx-audio
+        requires_mlx_audio = backend == "mlx-audio"
+
+    # Also check explicit backend override
+    if backend == "mlx-audio":
+        requires_mlx_audio = True
+
+    if requires_mlx_audio and not is_mlx_audio_available():
+        raise typer.BadParameter(
+            f"Model '{model_id}' requires the mlx-audio backend which is not installed. "
+            "Install with: pip install 'pedantic-parakeet[mlx-audio]'",
+            param_hint="--model",
+        )
 
 
 def _write_outputs(
@@ -434,6 +464,9 @@ def main(
 
     # Validate language capabilities BEFORE instantiating backend
     _validate_language_capabilities(language, language_strength, model)
+
+    # Validate backend availability BEFORE instantiating backend
+    _validate_backend_availability(model, backend)
 
     # Discover audio files
     audio_files = discover_audio_files(inputs, recursive=recursive)
