@@ -111,9 +111,9 @@ class MlxAudioBackend:
     def _load_model(self) -> Any:
         """Lazy load the model on first use."""
         if self._model is None:
-            from mlx_audio.stt import load
+            from mlx_audio.stt.utils import load_model
 
-            self._model = load(self._model_id)
+            self._model = load_model(self._model_id)
         return self._model
 
     def _build_generate_kwargs(self) -> dict[str, Any]:
