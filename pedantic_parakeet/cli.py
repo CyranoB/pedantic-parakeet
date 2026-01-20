@@ -50,8 +50,15 @@ def version_callback(value: bool) -> None:
 def list_models_callback(value: bool) -> None:
     """Print curated models and exit."""
     if value:
-        console.print("[bold]Supported Models:[/bold]\n")
-        for model in list_models():
+        mlx_audio_available = is_mlx_audio_available()
+        models = list_models()
+        
+        # Filter to only show models the user can actually use
+        available_models = [m for m in models if m.backend == Backend.PARAKEET or mlx_audio_available]
+        unavailable_models = [m for m in models if m.backend != Backend.PARAKEET and not mlx_audio_available]
+        
+        console.print("[bold]Available Models:[/bold]\n")
+        for model in available_models:
             timestamps = "[green]✓[/green]" if model.capabilities.supports_timestamps else "[red]✗[/red]"
             console.print(f"  [cyan]{model.model_id}[/cyan]")
             console.print(f"    Backend: {model.backend}")
@@ -60,6 +67,18 @@ def list_models_callback(value: bool) -> None:
                 console.print(f"    Aliases: {', '.join(model.aliases)}")
             console.print(f"    {model.description}")
             console.print()
+        
+        # Show unavailable models with install hint
+        if unavailable_models:
+            console.print("[dim]─" * 50 + "[/dim]")
+            console.print("\n[bold dim]Additional Models (requires mlx-audio):[/bold dim]\n")
+            console.print("[dim]Install with: pip install 'pedantic-parakeet\\[mlx-audio]'[/dim]\n")
+            for model in unavailable_models:
+                timestamps = "✓" if model.capabilities.supports_timestamps else "✗"
+                aliases = f" ({', '.join(model.aliases)})" if model.aliases else ""
+                console.print(f"  [dim]{model.model_id}{aliases}[/dim]")
+            console.print()
+        
         raise typer.Exit()
 
 
