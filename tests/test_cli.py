@@ -1,6 +1,7 @@
 """Tests for cli.py formatting functions."""
 
 import pytest
+from typer.testing import CliRunner
 
 from pedantic_parakeet.parakeet_mlx.alignment import (
     AlignedResult,
@@ -14,6 +15,14 @@ from pedantic_parakeet.parakeet_mlx.cli import (
     to_txt,
     to_vtt,
 )
+from pedantic_parakeet.cli import (
+    app,
+    _validate_format_capabilities,
+    _validate_language_capabilities,
+)
+
+
+runner = CliRunner()
 
 
 # Helper to create test data
@@ -292,3 +301,129 @@ class TestEdgeCases:
         # Should not escape characters inappropriately
         txt = to_txt(result)
         assert "<world>" in txt
+
+
+# ============================================================================
+# CLI Command Tests
+# ============================================================================
+
+
+class TestListModels:
+    """Tests for --list-models command."""
+
+    def test_list_models_shows_curated_models(self):
+        """--list-models should display curated model IDs."""
+        result = runner.invoke(app, ["--list-models"])
+        assert result.exit_code == 0
+        assert "mlx-community/parakeet-tdt-0.6b-v3" in result.output
+        assert "mlx-community/whisper-large-v3-turbo-asr-fp16" in result.output
+        assert "mlx-community/Voxtral-Mini-3B-2507-bf16" in result.output
+
+    def test_list_models_shows_backend_info(self):
+        """--list-models should show backend assignments."""
+        result = runner.invoke(app, ["--list-models"])
+        assert result.exit_code == 0
+        assert "Backend: parakeet" in result.output
+        assert "Backend: mlx-audio" in result.output
+
+    def test_list_models_shows_timestamps_support(self):
+        """--list-models should indicate timestamp support."""
+        result = runner.invoke(app, ["--list-models"])
+        assert result.exit_code == 0
+        assert "Timestamps:" in result.output
+
+    def test_list_models_shows_aliases(self):
+        """--list-models should show model aliases."""
+        result = runner.invoke(app, ["--list-models"])
+        assert result.exit_code == 0
+        assert "Aliases:" in result.output
+        assert "parakeet" in result.output
+        assert "whisper" in result.output
+
+
+class TestFormatValidation:
+    """Tests for format/capability validation before backend instantiation."""
+
+    def test_voxtral_with_srt_format_raises_error(self):
+        """Voxtral model with --format srt should error before instantiation."""
+        import typer
+        with pytest.raises(typer.BadParameter) as exc_info:
+            _validate_format_capabilities(["srt"], "voxtral")
+
+        error_msg = str(exc_info.value)
+        assert "does not support timestamps" in error_msg
+        assert "srt" in error_msg
+        assert "txt" in error_msg
+
+    def test_voxtral_with_vtt_format_raises_error(self):
+        """Voxtral model with --format vtt should error."""
+        import typer
+        with pytest.raises(typer.BadParameter) as exc_info:
+            _validate_format_capabilities(["vtt"], "voxtral")
+
+        error_msg = str(exc_info.value)
+        assert "does not support timestamps" in error_msg
+
+    def test_voxtral_with_json_format_raises_error(self):
+        """Voxtral model with --format json should error."""
+        import typer
+        with pytest.raises(typer.BadParameter) as exc_info:
+            _validate_format_capabilities(["json"], "voxtral")
+
+        error_msg = str(exc_info.value)
+        assert "does not support timestamps" in error_msg
+
+    def test_voxtral_with_txt_format_passes(self):
+        """Voxtral model with --format txt should pass validation."""
+        # Should not raise
+        _validate_format_capabilities(["txt"], "voxtral")
+
+    def test_parakeet_with_srt_format_passes(self):
+        """Parakeet model with --format srt should pass validation."""
+        # Should not raise
+        _validate_format_capabilities(["srt"], "parakeet")
+
+    def test_whisper_with_all_formats_passes(self):
+        """Whisper model with all formats should pass validation."""
+        # Should not raise
+        _validate_format_capabilities(["txt", "srt", "vtt", "json"], "whisper")
+
+    def test_unknown_model_passes_validation(self):
+        """Unknown model IDs should pass format validation (let Transcriber handle)."""
+        # Should not raise - unknown models are allowed through
+        _validate_format_capabilities(["srt"], "unknown/model-id")
+
+
+class TestLanguageValidation:
+    """Tests for language option validation before backend instantiation."""
+
+    def test_language_strength_with_mlx_audio_raises_error(self):
+        """--language-strength with mlx-audio models should error."""
+        import typer
+        with pytest.raises(typer.BadParameter) as exc_info:
+            _validate_language_capabilities("fr", 1.5, "whisper")
+
+        error_msg = str(exc_info.value)
+        assert "does not support --language-strength" in error_msg
+
+    def test_language_strength_with_parakeet_passes(self):
+        """--language-strength with Parakeet model should pass."""
+        # Should not raise
+        _validate_language_capabilities("fr", 1.5, "parakeet")
+
+    def test_language_with_voxtral_passes(self):
+        """--language with Voxtral should pass (supports language hint)."""
+        # Should not raise - Voxtral supports language hints
+        _validate_language_capabilities("fr", 0.5, "voxtral")
+
+    def test_default_options_pass(self):
+        """Default options (no language, default strength) should always pass."""
+        # Should not raise for any model
+        _validate_language_capabilities(None, 0.5, "parakeet")
+        _validate_language_capabilities(None, 0.5, "whisper")
+        _validate_language_capabilities(None, 0.5, "voxtral")
+
+    def test_unknown_model_passes_validation(self):
+        """Unknown model IDs should pass language validation."""
+        # Should not raise - unknown models are allowed through
+        _validate_language_capabilities("fr", 1.5, "unknown/model-id")
