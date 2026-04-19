@@ -134,9 +134,9 @@ def _pick_downloaded_media(temp_dir: Path) -> Path:
     candidates = [path for path in temp_dir.rglob("*") if path.is_file()]
     media_candidates = [path for path in candidates if is_supported_audio(path)]
     if media_candidates:
-        return sorted(media_candidates)[0]
+        return min(media_candidates)
     if candidates:
-        return sorted(candidates)[0]
+        return min(candidates)
     raise InputResolutionError("yt-dlp did not produce a downloadable media file")
 
 

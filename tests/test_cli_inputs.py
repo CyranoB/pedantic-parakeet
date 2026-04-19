@@ -41,20 +41,70 @@ class DummyTranscriber:
         return make_result(str(audio_path))
 
 
+def make_local_source(media_file: Path, original_input: str | None = None):
+    from pedantic_parakeet.sources import ResolvedSource
+
+    return ResolvedSource(
+        source_kind="local",
+        original_input=original_input or str(media_file),
+        display_name=media_file.name,
+        output_stem=media_file.stem,
+        media_path=media_file,
+    )
+
+
+def make_url_source(url: str, display_name: str, output_stem: str):
+    from pedantic_parakeet.sources import ResolvedSource
+
+    return ResolvedSource(
+        source_kind="url",
+        original_input=url,
+        display_name=display_name,
+        output_stem=output_stem,
+        media_path=None,
+    )
+
+
+def make_materialized_source(media_file: Path):
+    from pedantic_parakeet.sources import MaterializedSource
+
+    return MaterializedSource(
+        display_name=media_file.name,
+        output_stem=media_file.stem,
+        media_path=media_file,
+        is_temporary=False,
+        cleanup_path=None,
+    )
+
+
+def patch_local_cli_io(cli, monkeypatch, media_file: Path) -> None:
+    monkeypatch.setattr(
+        cli,
+        "resolve_inputs",
+        lambda inputs, recursive: [
+            make_local_source(media_file, original_input=inputs[0])
+        ],
+    )
+    monkeypatch.setattr(
+        cli,
+        "materialize_source",
+        lambda source: make_materialized_source(media_file),
+    )
+    monkeypatch.setattr(cli, "cleanup_materialized_source", lambda source: None)
+    monkeypatch.setattr(cli, "check_ffmpeg", lambda: True)
+
+
 def test_dry_run_accepts_public_url(monkeypatch):
     from pedantic_parakeet import cli
-    from pedantic_parakeet.sources import ResolvedSource
 
     monkeypatch.setattr(
         cli,
         "resolve_inputs",
         lambda inputs, recursive: [
-            ResolvedSource(
-                source_kind="url",
-                original_input=inputs[0],
+            make_url_source(
+                url=inputs[0],
                 display_name="Bonjour le monde",
                 output_stem="Bonjour le monde",
-                media_path=None,
             )
         ],
     )
@@ -68,37 +118,11 @@ def test_dry_run_accepts_public_url(monkeypatch):
 
 def test_cli_uses_whisper_as_default_model(tmp_path: Path, monkeypatch):
     from pedantic_parakeet import cli
-    from pedantic_parakeet.sources import MaterializedSource, ResolvedSource
 
     media_file = tmp_path / "sample.wav"
     media_file.write_text("x", encoding="utf-8")
 
-    monkeypatch.setattr(
-        cli,
-        "resolve_inputs",
-        lambda inputs, recursive: [
-            ResolvedSource(
-                source_kind="local",
-                original_input=inputs[0],
-                display_name=media_file.name,
-                output_stem=media_file.stem,
-                media_path=media_file,
-            )
-        ],
-    )
-    monkeypatch.setattr(
-        cli,
-        "materialize_source",
-        lambda source: MaterializedSource(
-            display_name=source.display_name,
-            output_stem=source.output_stem,
-            media_path=media_file,
-            is_temporary=False,
-            cleanup_path=None,
-        ),
-    )
-    monkeypatch.setattr(cli, "cleanup_materialized_source", lambda source: None)
-    monkeypatch.setattr(cli, "check_ffmpeg", lambda: True)
+    patch_local_cli_io(cli, monkeypatch, media_file)
     monkeypatch.setattr(cli, "Transcriber", DummyTranscriber)
 
     result = runner.invoke(cli.app, [str(media_file), "--format", "txt"])
@@ -109,37 +133,11 @@ def test_cli_uses_whisper_as_default_model(tmp_path: Path, monkeypatch):
 
 def test_cli_preserves_explicit_model_override(tmp_path: Path, monkeypatch):
     from pedantic_parakeet import cli
-    from pedantic_parakeet.sources import MaterializedSource, ResolvedSource
 
     media_file = tmp_path / "sample.wav"
     media_file.write_text("x", encoding="utf-8")
 
-    monkeypatch.setattr(
-        cli,
-        "resolve_inputs",
-        lambda inputs, recursive: [
-            ResolvedSource(
-                source_kind="local",
-                original_input=inputs[0],
-                display_name=media_file.name,
-                output_stem=media_file.stem,
-                media_path=media_file,
-            )
-        ],
-    )
-    monkeypatch.setattr(
-        cli,
-        "materialize_source",
-        lambda source: MaterializedSource(
-            display_name=source.display_name,
-            output_stem=source.output_stem,
-            media_path=media_file,
-            is_temporary=False,
-            cleanup_path=None,
-        ),
-    )
-    monkeypatch.setattr(cli, "cleanup_materialized_source", lambda source: None)
-    monkeypatch.setattr(cli, "check_ffmpeg", lambda: True)
+    patch_local_cli_io(cli, monkeypatch, media_file)
     monkeypatch.setattr(cli, "Transcriber", DummyTranscriber)
 
     result = runner.invoke(cli.app, [str(media_file), "--model", "parakeet", "--format", "txt"])

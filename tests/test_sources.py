@@ -15,10 +15,42 @@ from pedantic_parakeet.sources import (
 )
 
 
+def make_resolved_source(
+    source_kind: str,
+    original_input: str,
+    display_name: str,
+    output_stem: str,
+    media_path: Path | None = None,
+) -> ResolvedSource:
+    return ResolvedSource(
+        source_kind=source_kind,
+        original_input=original_input,
+        display_name=display_name,
+        output_stem=output_stem,
+        media_path=media_path,
+    )
+
+
+def make_materialized_source(
+    display_name: str,
+    output_stem: str,
+    media_path: Path,
+    is_temporary: bool,
+    cleanup_path: Path | None,
+) -> MaterializedSource:
+    return MaterializedSource(
+        display_name=display_name,
+        output_stem=output_stem,
+        media_path=media_path,
+        is_temporary=is_temporary,
+        cleanup_path=cleanup_path,
+    )
+
+
 def test_is_url_input_recognizes_http_and_https():
     assert is_url_input("https://example.com/video")
-    assert is_url_input("http://example.com/video")
-    assert not is_url_input("/tmp/video.mp4")
+    assert is_url_input("https://example.com/watch?v=123")
+    assert not is_url_input("/Users/example/video.mp4")
     assert not is_url_input("recording.m4a")
 
 
@@ -37,9 +69,10 @@ def test_resolve_inputs_expands_directories_and_local_files(tmp_path: Path):
     assert all(source.source_kind == "local" for source in sources)
 
 
-def test_resolve_inputs_raises_for_missing_local_paths():
+def test_resolve_inputs_raises_for_missing_local_paths(tmp_path: Path):
+    missing_file = tmp_path / "does-not-exist.mp4"
     with pytest.raises(InputResolutionError, match="Input does not exist"):
-        resolve_inputs(["/tmp/does-not-exist-12345.mp4"])
+        resolve_inputs([str(missing_file)])
 
 
 def test_resolve_inputs_uses_metadata_for_public_urls(monkeypatch: pytest.MonkeyPatch):
@@ -52,12 +85,11 @@ def test_resolve_inputs_uses_metadata_for_public_urls(monkeypatch: pytest.Monkey
     sources = resolve_inputs(["https://example.com/watch?v=123"])
 
     assert sources == [
-        ResolvedSource(
+        make_resolved_source(
             source_kind="url",
             original_input="https://example.com/watch?v=123",
             display_name="Bonjour le monde",
             output_stem="Bonjour le monde",
-            media_path=None,
         )
     ]
 
@@ -84,7 +116,7 @@ def test_resolve_inputs_allows_mixed_local_and_url_inputs(
 def test_materialize_source_returns_local_source_unchanged(tmp_path: Path):
     media_path = tmp_path / "lesson.mp4"
     media_path.write_text("x", encoding="utf-8")
-    source = ResolvedSource(
+    source = make_resolved_source(
         source_kind="local",
         original_input=str(media_path),
         display_name=media_path.name,
@@ -94,7 +126,7 @@ def test_materialize_source_returns_local_source_unchanged(tmp_path: Path):
 
     materialized = materialize_source(source)
 
-    assert materialized == MaterializedSource(
+    assert materialized == make_materialized_source(
         display_name=media_path.name,
         output_stem=media_path.stem,
         media_path=media_path,
@@ -110,7 +142,7 @@ def test_materialize_source_downloads_url_to_temporary_media(
     downloaded_file.write_text("x", encoding="utf-8")
 
     def fake_download(source: ResolvedSource) -> MaterializedSource:
-        return MaterializedSource(
+        return make_materialized_source(
             display_name=source.display_name,
             output_stem=source.output_stem,
             media_path=downloaded_file,
@@ -120,12 +152,11 @@ def test_materialize_source_downloads_url_to_temporary_media(
 
     monkeypatch.setattr("pedantic_parakeet.sources.download_url_source", fake_download)
 
-    source = ResolvedSource(
+    source = make_resolved_source(
         source_kind="url",
         original_input="https://example.com/watch?v=123",
         display_name="Bonjour le monde",
         output_stem="Bonjour le monde",
-        media_path=None,
     )
 
     materialized = materialize_source(source)
@@ -138,7 +169,7 @@ def test_materialize_source_downloads_url_to_temporary_media(
 def test_cleanup_materialized_source_removes_temporary_downloads(tmp_path: Path):
     downloaded_file = tmp_path / "downloaded.webm"
     downloaded_file.write_text("x", encoding="utf-8")
-    materialized = MaterializedSource(
+    materialized = make_materialized_source(
         display_name="downloaded.webm",
         output_stem="downloaded",
         media_path=downloaded_file,

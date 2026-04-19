@@ -8,14 +8,11 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from ..types import Segment, Token, TranscriptionResult
 from .base import Backend, STTCapabilities
 from .registry import MODEL_REGISTRY
-
-if TYPE_CHECKING:
-    pass
 
 # Flag to track if mlx-audio is available
 _mlx_audio_available: bool | None = None
@@ -53,7 +50,6 @@ def _load_whisper_model(model_id: str) -> Any:
     import mlx.core as mx
     from huggingface_hub import snapshot_download
     from mlx.utils import tree_unflatten
-
     from mlx_audio.stt.models.whisper.whisper import Model, ModelDimensions
 
     # Download model if needed
@@ -102,10 +98,12 @@ def _load_whisper_model(model_id: str) -> Any:
     if quantization is not None:
         import mlx.nn as nn
 
-        class_predicate = (
-            lambda p, m: isinstance(m, (nn.Linear, nn.Embedding))
-            and f"{p}.scales" in weights
-        )
+        def class_predicate(param_name: str, module: Any) -> bool:
+            return (
+                isinstance(module, (nn.Linear, nn.Embedding))
+                and f"{param_name}.scales" in weights
+            )
+
         nn.quantize(model, **quantization, class_predicate=class_predicate)
 
     weights = tree_unflatten(list(weights.items()))
@@ -221,6 +219,88 @@ class MlxAudioBackend:
 
         return kwargs
 
+    def _word_to_token(self, word: Any) -> Token | None:
+        """Convert an mlx-audio word item into a token."""
+        if hasattr(word, "word"):
+            return Token(
+                text=word.word,
+                start=getattr(word, "start", 0.0),
+                end=getattr(word, "end", 0.0),
+                confidence=getattr(word, "probability", 1.0),
+            )
+
+        if isinstance(word, dict):
+            return Token(
+                text=word.get("word", word.get("text", "")),
+                start=word.get("start", 0.0),
+                end=word.get("end", 0.0),
+                confidence=word.get("probability", word.get("confidence", 1.0)),
+            )
+
+        return None
+
+    def _extract_word_tokens(self, seg: Any) -> list[Token]:
+        """Extract word-level tokens from a segment if present."""
+        if hasattr(seg, "get"):
+            words = getattr(seg, "words", None) or seg.get("words", [])
+        else:
+            words = getattr(seg, "words", None) or []
+
+        tokens: list[Token] = []
+        for word in words:
+            token = self._word_to_token(word)
+            if token is not None:
+                tokens.append(token)
+        return tokens
+
+    def _build_whisper_segment(self, seg: Any) -> Segment | None:
+        """Convert Whisper-style segment output to a Segment."""
+        if hasattr(seg, "text"):
+            text = seg.text
+            start = getattr(seg, "start", 0.0)
+            end = getattr(seg, "end", 0.0)
+        elif isinstance(seg, dict):
+            text = seg.get("text", "")
+            start = seg.get("start", 0.0)
+            end = seg.get("end", 0.0)
+        else:
+            return None
+
+        return Segment(
+            text=text.strip() if text else "",
+            start=start,
+            end=end,
+            confidence=1.0,
+            tokens=self._extract_word_tokens(seg),
+        )
+
+    def _build_sentence_segment(self, sent: Any) -> Segment:
+        """Convert Parakeet sentence output to a Segment."""
+        tokens = [
+            Token(
+                text=getattr(tok, "text", ""),
+                start=getattr(tok, "start", 0.0),
+                end=getattr(tok, "end", 0.0),
+                confidence=getattr(tok, "confidence", 1.0),
+            )
+            for tok in getattr(sent, "tokens", [])
+        ]
+        return Segment(
+            text=getattr(sent, "text", "").strip(),
+            start=getattr(sent, "start", 0.0),
+            end=getattr(sent, "end", 0.0),
+            confidence=getattr(sent, "confidence", 1.0),
+            tokens=tokens,
+        )
+
+    def _result_text(self, result: Any, segments: list[Segment]) -> str:
+        """Derive the final transcript text from the result payload."""
+        if hasattr(result, "text"):
+            return result.text
+        if segments:
+            return " ".join(seg.text for seg in segments)
+        return ""
+
     def _convert_result(self, result: Any, audio_path: str) -> TranscriptionResult:
         """Convert mlx-audio output to TranscriptionResult.
 
@@ -231,93 +311,18 @@ class MlxAudioBackend:
         """
         segments: list[Segment] = []
 
-        # Try different result formats
         if hasattr(result, "segments") and result.segments:
-            # Whisper-style output with segments
             for seg in result.segments:
-                tokens: list[Token] = []
-
-                # Extract word-level tokens if available
-                words = getattr(seg, "words", None) or seg.get("words", []) if hasattr(seg, "get") else []
-                for word in words:
-                    if hasattr(word, "word"):
-                        # Object-style word
-                        tokens.append(
-                            Token(
-                                text=word.word,
-                                start=getattr(word, "start", 0.0),
-                                end=getattr(word, "end", 0.0),
-                                confidence=getattr(word, "probability", 1.0),
-                            )
-                        )
-                    elif isinstance(word, dict):
-                        # Dict-style word
-                        tokens.append(
-                            Token(
-                                text=word.get("word", word.get("text", "")),
-                                start=word.get("start", 0.0),
-                                end=word.get("end", 0.0),
-                                confidence=word.get("probability", word.get("confidence", 1.0)),
-                            )
-                        )
-
-                # Extract segment info
-                if hasattr(seg, "text"):
-                    seg_text = seg.text
-                    seg_start = getattr(seg, "start", 0.0)
-                    seg_end = getattr(seg, "end", 0.0)
-                elif isinstance(seg, dict):
-                    seg_text = seg.get("text", "")
-                    seg_start = seg.get("start", 0.0)
-                    seg_end = seg.get("end", 0.0)
-                else:
-                    continue
-
-                segments.append(
-                    Segment(
-                        text=seg_text.strip() if seg_text else "",
-                        start=seg_start,
-                        end=seg_end,
-                        confidence=1.0,
-                        tokens=tokens,
-                    )
-                )
+                converted = self._build_whisper_segment(seg)
+                if converted is not None:
+                    segments.append(converted)
 
         elif hasattr(result, "sentences") and result.sentences:
-            # Parakeet-style output with sentences
             for sent in result.sentences:
-                tokens: list[Token] = []
-                sent_tokens = getattr(sent, "tokens", [])
-                for tok in sent_tokens:
-                    tokens.append(
-                        Token(
-                            text=getattr(tok, "text", ""),
-                            start=getattr(tok, "start", 0.0),
-                            end=getattr(tok, "end", 0.0),
-                            confidence=getattr(tok, "confidence", 1.0),
-                        )
-                    )
-
-                segments.append(
-                    Segment(
-                        text=getattr(sent, "text", "").strip(),
-                        start=getattr(sent, "start", 0.0),
-                        end=getattr(sent, "end", 0.0),
-                        confidence=getattr(sent, "confidence", 1.0),
-                        tokens=tokens,
-                    )
-                )
-
-        # Extract full text
-        if hasattr(result, "text"):
-            full_text = result.text
-        elif segments:
-            full_text = " ".join(seg.text for seg in segments)
-        else:
-            full_text = ""
+                segments.append(self._build_sentence_segment(sent))
 
         return TranscriptionResult(
-            text=full_text,
+            text=self._result_text(result, segments),
             segments=segments,
             audio_path=audio_path,
             model_id=self._model_id,
@@ -326,7 +331,7 @@ class MlxAudioBackend:
     def transcribe(
         self,
         audio_path: Path | str,
-        chunk_callback: Callable[[float, float], None] | None = None,
+        _chunk_callback: Callable[[float, float], None] | None = None,
     ) -> TranscriptionResult:
         """Transcribe an audio file.
 

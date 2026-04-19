@@ -1,5 +1,6 @@
 """CLI interface for transcription tool."""
 
+import math
 from pathlib import Path
 from typing import Annotated
 
@@ -31,6 +32,7 @@ from .sources import (
 from .transcriber import Transcriber
 
 CLI_DEFAULT_MODEL = "whisper"
+DEFAULT_LANGUAGE_STRENGTH = 0.5
 
 app = typer.Typer(
     name="transcribe",
@@ -62,47 +64,62 @@ def version_callback(value: bool) -> None:
         raise typer.Exit()
 
 
+def _is_model_available(model, mlx_audio_available: bool) -> bool:
+    """Return whether the model can be used in the current environment."""
+    return model.backend == Backend.PARAKEET or mlx_audio_available
+
+
+def _format_timestamps_support(supports_timestamps: bool, rich: bool = True) -> str:
+    """Format a timestamps support indicator for model listings."""
+    if rich:
+        return "[green]✓[/green]" if supports_timestamps else "[red]✗[/red]"
+    return "✓" if supports_timestamps else "✗"
+
+
+def _print_available_models(models: list) -> None:
+    """Print models that are currently usable."""
+    console.print("[bold]Available Models:[/bold]\n")
+    for model in models:
+        console.print(f"  [cyan]{model.model_id}[/cyan]")
+        console.print(f"    Backend: {model.backend}")
+        console.print(
+            "    Timestamps: "
+            f"{_format_timestamps_support(model.capabilities.supports_timestamps)}"
+        )
+        if model.aliases:
+            console.print(f"    Aliases: {', '.join(model.aliases)}")
+        console.print(f"    {model.description}")
+        console.print()
+
+
+def _print_unavailable_models(models: list) -> None:
+    """Print models that require optional mlx-audio support."""
+    if not models:
+        return
+
+    console.print("[dim]─" * 50 + "[/dim]")
+    console.print("\n[bold dim]Additional Models (requires mlx-audio):[/bold dim]\n")
+    console.print("[dim]Install with: pip install 'pedantic-parakeet\\[mlx-audio]'[/dim]\n")
+    for model in models:
+        aliases = f" ({', '.join(model.aliases)})" if model.aliases else ""
+        console.print(f"  [dim]{model.model_id}{aliases}[/dim]")
+    console.print()
+
+
 def list_models_callback(value: bool) -> None:
     """Print curated models and exit."""
     if value:
         mlx_audio_available = is_mlx_audio_available()
         models = list_models()
-
-        # Filter to only show models the user can actually use
         available_models = [
-            model for model in models
-            if model.backend == Backend.PARAKEET or mlx_audio_available
+            model for model in models if _is_model_available(model, mlx_audio_available)
         ]
         unavailable_models = [
-            model for model in models
-            if model.backend != Backend.PARAKEET and not mlx_audio_available
+            model for model in models if not _is_model_available(model, mlx_audio_available)
         ]
 
-        console.print("[bold]Available Models:[/bold]\n")
-        for model in available_models:
-            timestamps = (
-                "[green]✓[/green]"
-                if model.capabilities.supports_timestamps
-                else "[red]✗[/red]"
-            )
-            console.print(f"  [cyan]{model.model_id}[/cyan]")
-            console.print(f"    Backend: {model.backend}")
-            console.print(f"    Timestamps: {timestamps}")
-            if model.aliases:
-                console.print(f"    Aliases: {', '.join(model.aliases)}")
-            console.print(f"    {model.description}")
-            console.print()
-
-        # Show unavailable models with install hint
-        if unavailable_models:
-            console.print("[dim]─" * 50 + "[/dim]")
-            console.print("\n[bold dim]Additional Models (requires mlx-audio):[/bold dim]\n")
-            console.print("[dim]Install with: pip install 'pedantic-parakeet\\[mlx-audio]'[/dim]\n")
-            for model in unavailable_models:
-                timestamps = "✓" if model.capabilities.supports_timestamps else "✗"
-                aliases = f" ({', '.join(model.aliases)})" if model.aliases else ""
-                console.print(f"  [dim]{model.model_id}{aliases}[/dim]")
-            console.print()
+        _print_available_models(available_models)
+        _print_unavailable_models(unavailable_models)
 
         raise typer.Exit()
 
@@ -153,7 +170,13 @@ def _validate_language_capabilities(
     Raises:
         typer.BadParameter: If model doesn't support requested language features.
     """
-    if language is None and language_strength == 0.5:
+    uses_default_strength = math.isclose(
+        language_strength,
+        DEFAULT_LANGUAGE_STRENGTH,
+        rel_tol=0.0,
+        abs_tol=1e-9,
+    )
+    if language is None and uses_default_strength:
         return  # No language options used
 
     try:
@@ -161,7 +184,7 @@ def _validate_language_capabilities(
         caps = model_info.capabilities
 
         # Check language_strength with models that don't support language bias
-        if language_strength != 0.5 and not caps.supports_language_bias:
+        if not uses_default_strength and not caps.supports_language_bias:
             supported_models = [
                 m.model_id for m in list_models()
                 if m.capabilities.supports_language_bias
@@ -394,7 +417,7 @@ def _process_file(
 
 
 @app.command()
-def main(
+def main(  # NOSONAR - Typer entrypoint intentionally exposes the public CLI option surface.
     inputs: Annotated[
         list[str],
         typer.Argument(
@@ -486,7 +509,7 @@ def main(
             "--language-strength",
             help="Bias strength 0.0-2.0 (default 0.5)",
         ),
-    ] = 0.5,
+    ] = DEFAULT_LANGUAGE_STRENGTH,
     verbose: Annotated[
         bool,
         typer.Option(
