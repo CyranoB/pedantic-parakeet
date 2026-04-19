@@ -2,7 +2,6 @@
 
 import warnings
 
-import mlx.core as mx
 import numpy as np
 
 SUPPORTED_LANGUAGES = frozenset({"fr"})
@@ -23,7 +22,7 @@ def build_language_bias(
     vocabulary: list[str],
     target_lang: str,
     strength: float = 0.5,
-) -> mx.array:
+) -> np.ndarray:
     """
     Build bias vector for target language.
 
@@ -58,4 +57,4 @@ def build_language_bias(
         if suppressed == 0:
             warnings.warn("No English tokens found to suppress")
 
-    return mx.array(bias_np)
+    return bias_np

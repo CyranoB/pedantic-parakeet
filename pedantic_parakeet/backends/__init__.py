@@ -9,13 +9,7 @@ This module provides:
 - MlxAudioBackend implementation for mlx-audio models (optional)
 """
 
-from .base import (
-    Backend,
-    BaseTranscriber,
-    ModelInfo,
-    STTCapabilities,
-)
-from .parakeet import ParakeetBackend
+from .base import Backend, BaseTranscriber, ModelInfo, STTCapabilities
 
 __all__ = [
     "Backend",
@@ -28,7 +22,11 @@ __all__ = [
 
 
 def __getattr__(name: str):
-    """Lazy import MlxAudioBackend to avoid importing mlx-audio when not needed."""
+    """Lazy import backend implementations to avoid eager MLX initialization."""
+    if name == "ParakeetBackend":
+        from .parakeet import ParakeetBackend
+
+        return ParakeetBackend
     if name == "MlxAudioBackend":
         from .mlx_audio import MlxAudioBackend
 

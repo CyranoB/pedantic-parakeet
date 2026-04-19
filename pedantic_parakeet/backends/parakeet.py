@@ -99,11 +99,13 @@ class ParakeetBackend:
         """Build decoding configuration."""
         language_bias = None
         if self.language and self._capabilities.supports_language_bias:
-            language_bias = build_language_bias(
+            import mlx.core as mx
+
+            language_bias = mx.array(build_language_bias(
                 model.vocabulary,
                 self.language,
                 self.language_strength,
-            )
+            ))
 
         return DecodingConfig(
             decoding=Greedy(),

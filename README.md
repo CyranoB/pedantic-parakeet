@@ -4,12 +4,13 @@
 
 *In the same way that the Guild of Accountants believes every penny must be accounted for, the pedantic parakeet believes every syllable deserves its moment in the permanent record—a philosophy that sounds admirable right up until you remember what you said to the girl from HR at the Christmas party after your fourth glass of wine.*
 
-A CLI tool for transcribing audio files using MLX models optimized for Apple Silicon. Supports multiple backends including NVIDIA Parakeet TDT, OpenAI Whisper, and Mistral Voxtral.
+A CLI tool for transcribing local media files and public media URLs using MLX models optimized for Apple Silicon. Supports multiple backends including NVIDIA Parakeet TDT, OpenAI Whisper, and Mistral Voxtral.
 
 ## Features
 
-- **Multiple backends** — Parakeet (default), Whisper, Voxtral via mlx-audio
+- **Multiple backends** — Whisper (default), Parakeet, Voxtral via mlx-audio
 - **Multiple output formats** — txt, srt, vtt, json in a single run
+- **Media inputs** — Local audio, local video, directories, and public URLs
 - **Batch processing** — Process entire directories recursively
 - **Language bias** — Reduce code-switching for non-English content
 - **Smart validation** — Clear errors when model capabilities don't match requested options
@@ -28,18 +29,23 @@ Or install from PyPI:
 pip install pedantic-parakeet
 ```
 
-**Optional: mlx-audio backend** (for Whisper and Voxtral models):
-```bash
-pip install pedantic-parakeet[mlx-audio]
-```
+Whisper is the default CLI model, so `mlx-audio` is included in the base install.
 
-**System requirement**: `ffmpeg` must be installed (`brew install ffmpeg`)
+**Runtime requirements**:
+- `ffmpeg` must be installed (`brew install ffmpeg`)
+- Public URL inputs require `yt-dlp` support, which is included in the base package dependency set
 
 ## Quick Start
 
 ```bash
-# Transcribe a single file (outputs SRT by default)
+# Transcribe a single media file (outputs SRT by default)
 pedantic-parakeet audio.mp3
+
+# Transcribe a local video file
+pedantic-parakeet lecture.mp4
+
+# Transcribe a public video URL
+pedantic-parakeet https://example.com/watch?v=123
 
 # Output plain text
 pedantic-parakeet audio.mp3 --format txt
@@ -47,7 +53,7 @@ pedantic-parakeet audio.mp3 --format txt
 # Multiple formats at once
 pedantic-parakeet audio.mp3 --format txt,srt,json
 
-# Process a directory
+# Process a directory of mixed media
 pedantic-parakeet ./recordings/ --output ./transcripts/
 
 # Preview what would be processed
@@ -82,15 +88,19 @@ Supported Models:
 
 | Model | Backend | Timestamps | Best For |
 |-------|---------|------------|----------|
-| **parakeet** (default) | parakeet | ✓ | English, high accuracy, language bias |
+| **whisper** (default CLI) | mlx-audio | ✓ | Multilingual (100+ languages), public URL/video workflows |
+| **parakeet** | parakeet | ✓ | English, high accuracy, language bias |
 | **whisper-turbo** | mlx-audio | ✓ | Multilingual (100+ languages) |
 | **voxtral** | mlx-audio | ✗ | Context-aware, LLM-based (text only) |
 
 ### Selecting a Model
 
 ```bash
-# Use default Parakeet model
+# Use the default CLI model (Whisper)
 pedantic-parakeet audio.mp3
+
+# Use Parakeet explicitly
+pedantic-parakeet audio.mp3 --model parakeet
 
 # Use model alias
 pedantic-parakeet audio.mp3 --model whisper
@@ -170,7 +180,7 @@ Models with language bias support: mlx-community/parakeet-tdt-0.6b-v3
 pedantic-parakeet [OPTIONS] INPUTS...
 
 Arguments:
-  INPUTS...              Audio files or directories to transcribe
+  INPUTS...              Media files, directories, or public URLs to transcribe
 
 Options:
   -o, --output PATH      Output directory (default: same as input)
@@ -196,6 +206,9 @@ Options:
 # Single file to SRT
 pedantic-parakeet meeting.mp3
 
+# Local video file
+pedantic-parakeet meeting.mp4
+
 # Single file to text
 pedantic-parakeet meeting.mp3 -f txt
 
@@ -216,11 +229,21 @@ pedantic-parakeet ./recordings/ -r --output ./transcripts/
 pedantic-parakeet ./recordings/ -r --dry-run
 ```
 
+### Public URLs
+
+```bash
+# Public reel, clip, or hosted media URL
+pedantic-parakeet https://example.com/watch?v=123
+
+# Save transcript outputs somewhere specific
+pedantic-parakeet https://example.com/watch?v=123 --output ./transcripts
+```
+
 ### Multilingual Content
 
 ```bash
-# Use Whisper for non-English languages
-pedantic-parakeet spanish_audio.mp3 --model whisper
+# Whisper is the CLI default and works well for non-English languages
+pedantic-parakeet spanish_audio.mp3
 
 # French with language bias (Parakeet)
 pedantic-parakeet french_lecture.mp3 --language fr
@@ -240,8 +263,9 @@ pedantic-parakeet audio.mp3 -f all
 
 - Models are downloaded on first use (~1-3GB depending on model)
 - Parakeet models are optimized for English but work with other languages
-- For best multilingual support, use Whisper
+- The CLI defaults to Whisper for best multilingual support
 - Long audio files are automatically chunked (configurable with `--chunk-duration`)
+- Public URLs must be reachable without login/cookies in v1
 
 ## License
 
