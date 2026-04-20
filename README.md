@@ -34,6 +34,7 @@ Whisper is the default CLI model, so `mlx-audio` is included in the base install
 **Runtime requirements**:
 - `ffmpeg` must be installed (`brew install ffmpeg`)
 - Public URL inputs require `yt-dlp` support, which is included in the base package dependency set
+- Public URL ingestion is limited to single public media items; playlists and authenticated sources are out of scope in v1
 
 ## Quick Start
 
@@ -239,6 +240,14 @@ pedantic-parakeet https://example.com/watch?v=123
 pedantic-parakeet https://example.com/watch?v=123 --output ./transcripts
 ```
 
+URL support is intentionally conservative in v1:
+
+- Only public `http`/`https` media URLs are supported
+- Literal private, loopback, and link-local IP hosts are rejected
+- Playlists are not downloaded; only single media items are supported
+- Downloads are temporary and bounded by timeout/filesize guardrails
+- Sources that require login, cookies, or other authentication are not supported
+
 ### Multilingual Content
 
 ```bash
@@ -266,6 +275,7 @@ pedantic-parakeet audio.mp3 -f all
 - The CLI defaults to Whisper for best multilingual support
 - Long audio files are automatically chunked (configurable with `--chunk-duration`)
 - Public URLs must be reachable without login/cookies in v1
+- URL downloads use `yt-dlp` with single-item resolution plus timeout/filesize guardrails
 
 ## License
 
