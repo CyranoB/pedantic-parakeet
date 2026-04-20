@@ -1,12 +1,13 @@
-"""Audio file discovery and validation utilities."""
+"""Media file discovery and validation utilities."""
 
 import shutil
 import subprocess
 from pathlib import Path
 
-# Formats supported by librosa/ffmpeg (used by parakeet-mlx internally)
+# Formats supported by librosa/ffmpeg (used by transcription backends internally)
 SUPPORTED_EXTENSIONS = frozenset({
-    ".wav", ".mp3", ".m4a", ".flac", ".ogg", ".webm", ".aac", ".wma"
+    ".wav", ".mp3", ".m4a", ".flac", ".ogg", ".webm", ".aac", ".wma",
+    ".mp4", ".mov", ".mkv", ".m4v",
 })
 
 

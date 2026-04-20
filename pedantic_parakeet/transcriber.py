@@ -1,74 +1,102 @@
-"""Transcription engine wrapping parakeet-mlx."""
+"""Transcription engine with backend selection.
+
+This module provides:
+- Token, Segment, TranscriptionResult dataclasses for transcription output
+- Transcriber facade that delegates to backend implementations
+- create_backend factory for instantiating backends
+"""
 
 from collections.abc import Callable
-from dataclasses import dataclass, field
 from pathlib import Path
 
-from .language_bias import build_language_bias
-from .parakeet_mlx import (
-    BaseParakeet,
-    DecodingConfig,
-    Greedy,
-    SentenceConfig,
-    from_pretrained,
-)
+from .backends.base import Backend, BaseTranscriber, STTCapabilities
+from .backends.registry import resolve_model
+from .types import Segment, Token, TranscriptionResult
+
+# Re-export types for backwards compatibility
+__all__ = [
+    "Token",
+    "Segment",
+    "TranscriptionResult",
+    "Transcriber",
+    "create_backend",
+    "DEFAULT_MODEL",
+]
 
 # Default model - optimized for Apple Silicon
 DEFAULT_MODEL = "mlx-community/parakeet-tdt-0.6b-v3"
 
 
-@dataclass
-class Token:
-    """A word or subword token with timing information."""
+def create_backend(
+    model_id: str = DEFAULT_MODEL,
+    backend: Backend | None = None,
+    max_words_per_segment: int | None = None,
+    max_segment_duration: float | None = None,
+    chunk_duration: float = 120.0,
+    overlap_duration: float = 15.0,
+    language: str | None = None,
+    language_strength: float = 0.5,
+) -> BaseTranscriber:
+    """Create a transcription backend instance.
 
-    text: str
-    start: float  # seconds
-    end: float  # seconds
-    confidence: float = 1.0
+    Args:
+        model_id: HuggingFace model ID or alias (e.g., "parakeet", "whisper").
+        backend: Override backend selection (auto-detected from registry by default).
+        max_words_per_segment: Limit words per segment (for subtitle-friendly output).
+        max_segment_duration: Limit segment duration in seconds.
+        chunk_duration: Split long audio into chunks of this length (seconds).
+        overlap_duration: Overlap between chunks to prevent word-cutting.
+        language: Target language code (e.g., "fr") for language hints/bias.
+        language_strength: Bias strength 0.0-2.0 for Parakeet backend.
 
+    Returns:
+        A backend implementing BaseTranscriber.
 
-@dataclass
-class Segment:
-    """A sentence or phrase segment with timing information."""
+    Raises:
+        ValueError: If model_id is not found in registry.
+        RuntimeError: If mlx-audio backend requested but not installed.
+    """
+    # Resolve model from registry to get backend
+    model_info = resolve_model(model_id)
+    resolved_backend = backend if backend is not None else model_info.backend
 
-    text: str
-    start: float  # seconds
-    end: float  # seconds
-    confidence: float = 1.0
-    tokens: list[Token] = field(default_factory=list)
+    if resolved_backend == Backend.PARAKEET:
+        from .backends.parakeet import ParakeetBackend
 
-    @property
-    def duration(self) -> float:
-        return self.end - self.start
+        return ParakeetBackend(
+            model_id=model_info.model_id,
+            max_words_per_segment=max_words_per_segment,
+            max_segment_duration=max_segment_duration,
+            chunk_duration=chunk_duration,
+            overlap_duration=overlap_duration,
+            language=language,
+            language_strength=language_strength,
+        )
+    elif resolved_backend == Backend.MLX_AUDIO:
+        from .backends.mlx_audio import MlxAudioBackend
 
-
-@dataclass
-class TranscriptionResult:
-    """Complete transcription result."""
-
-    text: str
-    segments: list[Segment]
-    audio_path: str
-    model_id: str
-
-    @property
-    def duration(self) -> float:
-        """Total duration based on last segment end time."""
-        if not self.segments:
-            return 0.0
-        return self.segments[-1].end
+        return MlxAudioBackend(
+            model_id=model_info.model_id,
+            chunk_duration=chunk_duration,
+            overlap_duration=overlap_duration,
+            language=language,
+        )
+    else:
+        raise ValueError(f"Unknown backend: {resolved_backend}")
 
 
 class Transcriber:
     """
-    Audio transcriber using Parakeet TDT models.
+    Audio transcriber facade with backend selection.
 
     Loads the model once and reuses it for multiple transcriptions.
+    Delegates to the appropriate backend based on model selection.
     """
 
     def __init__(
         self,
         model_id: str = DEFAULT_MODEL,
+        backend: Backend | None = None,
         max_words_per_segment: int | None = None,
         max_segment_duration: float | None = None,
         chunk_duration: float = 120.0,
@@ -80,48 +108,54 @@ class Transcriber:
         Initialize the transcriber.
 
         Args:
-            model_id: HuggingFace model ID
-            max_words_per_segment: Limit words per segment (for subtitle-friendly output)
-            max_segment_duration: Limit segment duration in seconds
+            model_id: HuggingFace model ID or alias (e.g., "parakeet", "whisper").
+            backend: Override backend selection (auto-detected from registry).
+            max_words_per_segment: Limit words per segment (for subtitle-friendly output).
+            max_segment_duration: Limit segment duration in seconds.
             chunk_duration: Split long audio into chunks of this length (seconds).
                             Use 0 to disable chunking (may cause memory issues).
-            overlap_duration: Overlap between chunks to prevent word-cutting (seconds)
-            language: Target language code to reduce code-switching (e.g., "fr")
-            language_strength: Bias strength 0.0-2.0 (default 0.5)
+            overlap_duration: Overlap between chunks to prevent word-cutting (seconds).
+            language: Target language code to reduce code-switching (e.g., "fr").
+            language_strength: Bias strength 0.0-2.0 (default 0.5).
         """
-        self.model_id = model_id
-        self.max_words = max_words_per_segment
-        self.max_duration = max_segment_duration
-        self.chunk_duration = chunk_duration if chunk_duration > 0 else None
-        self.overlap_duration = overlap_duration
-        self.language = language
-        self.language_strength = language_strength
-        self._model: BaseParakeet | None = None
+        # Resolve model to get actual model_id and backend
+        try:
+            model_info = resolve_model(model_id)
+            self._resolved_model_id = model_info.model_id
+            self._resolved_backend = backend if backend is not None else model_info.backend
+        except ValueError:
+            # Unknown model - assume Parakeet for backwards compatibility
+            self._resolved_model_id = model_id
+            self._resolved_backend = backend if backend is not None else Backend.PARAKEET
 
-    def _load_model(self) -> BaseParakeet:
-        """Lazy load the model on first use."""
-        if self._model is None:
-            self._model = from_pretrained(self.model_id)
-        return self._model
+        # Store parameters for lazy backend creation
+        self._backend_params = {
+            "model_id": self._resolved_model_id,
+            "backend": self._resolved_backend,
+            "max_words_per_segment": max_words_per_segment,
+            "max_segment_duration": max_segment_duration,
+            "chunk_duration": chunk_duration,
+            "overlap_duration": overlap_duration,
+            "language": language,
+            "language_strength": language_strength,
+        }
+        self._backend: BaseTranscriber | None = None
 
-    def _build_config(self, model: BaseParakeet) -> DecodingConfig:
-        """Build decoding configuration."""
-        language_bias = None
-        if self.language:
-            language_bias = build_language_bias(
-                model.vocabulary,
-                self.language,
-                self.language_strength,
-            )
+    @property
+    def model_id(self) -> str:
+        """The model identifier being used."""
+        return self._resolved_model_id
 
-        return DecodingConfig(
-            decoding=Greedy(),
-            sentence=SentenceConfig(
-                max_words=self.max_words,
-                max_duration=self.max_duration,
-            ),
-            language_bias=language_bias,
-        )
+    @property
+    def capabilities(self) -> STTCapabilities:
+        """The capabilities of the selected backend."""
+        return self._get_backend().capabilities
+
+    def _get_backend(self) -> BaseTranscriber:
+        """Lazy create the backend on first use."""
+        if self._backend is None:
+            self._backend = create_backend(**self._backend_params)
+        return self._backend
 
     def transcribe(
         self,
@@ -132,49 +166,10 @@ class Transcriber:
         Transcribe an audio file.
 
         Args:
-            audio_path: Path to audio file
-            chunk_callback: Optional callback(current_pos, total_pos) for progress
+            audio_path: Path to audio file.
+            chunk_callback: Optional callback(current_pos, total_pos) for progress.
 
         Returns:
-            TranscriptionResult with text and timed segments
+            TranscriptionResult with text and timed segments.
         """
-        model = self._load_model()
-        config = self._build_config(model)
-
-        # Run transcription with chunking for long audio
-        result = model.transcribe(
-            str(audio_path),
-            decoding_config=config,
-            chunk_duration=self.chunk_duration,
-            overlap_duration=self.overlap_duration,
-            chunk_callback=chunk_callback,
-        )
-
-        # Convert to our data structures
-        segments = []
-        for sent in result.sentences:
-            tokens = [
-                Token(
-                    text=tok.text,
-                    start=tok.start,
-                    end=tok.end,
-                    confidence=tok.confidence,
-                )
-                for tok in sent.tokens
-            ]
-            segments.append(
-                Segment(
-                    text=sent.text.strip(),
-                    start=sent.start,
-                    end=sent.end,
-                    confidence=sent.confidence,
-                    tokens=tokens,
-                )
-            )
-
-        return TranscriptionResult(
-            text=result.text,
-            segments=segments,
-            audio_path=str(audio_path),
-            model_id=self.model_id,
-        )
+        return self._get_backend().transcribe(audio_path, chunk_callback)

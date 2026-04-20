@@ -4,7 +4,16 @@
 
 *In the same way that the Guild of Accountants believes every penny must be accounted for, the pedantic parakeet believes every syllable deserves its moment in the permanent record—a philosophy that sounds admirable right up until you remember what you said to the girl from HR at the Christmas party after your fourth glass of wine.*
 
-A CLI tool for transcribing audio files using NVIDIA Parakeet TDT models via `parakeet-mlx`, optimized for Apple Silicon.
+A CLI tool for transcribing local media files and public media URLs using MLX models optimized for Apple Silicon. Supports multiple backends including NVIDIA Parakeet TDT, OpenAI Whisper, and Mistral Voxtral.
+
+## Features
+
+- **Multiple backends** — Whisper (default), Parakeet, Voxtral via mlx-audio
+- **Multiple output formats** — txt, srt, vtt, json in a single run
+- **Media inputs** — Local audio, local video, directories, and public URLs
+- **Batch processing** — Process entire directories recursively
+- **Language bias** — Reduce code-switching for non-English content
+- **Smart validation** — Clear errors when model capabilities don't match requested options
 
 ## Installation
 
@@ -15,127 +24,258 @@ cd pedantic-parakeet
 uv sync
 ```
 
-Or install from PyPI (coming soon):
+Or install from PyPI:
 ```bash
 pip install pedantic-parakeet
 ```
 
-**System requirement**: `ffmpeg` must be installed (`brew install ffmpeg`)
+Whisper is the default CLI model, so `mlx-audio` is included in the base install.
 
-## Usage
+**Runtime requirements**:
+- `ffmpeg` must be installed (`brew install ffmpeg`)
+- Public URL inputs require `yt-dlp` support, which is included in the base package dependency set
+- Public URL ingestion is limited to single public media items; playlists and authenticated sources are out of scope in v1
+
+## Quick Start
 
 ```bash
-# Basic usage
+# Transcribe a single media file (outputs SRT by default)
 pedantic-parakeet audio.mp3
 
-# Batch processing
-pedantic-parakeet ./lectures/ --output ./transcripts/
+# Transcribe a local video file
+pedantic-parakeet lecture.mp4
 
-# Output formats
-pedantic-parakeet audio.mp3 --format srt
-pedantic-parakeet audio.mp3 --format txt,srt,vtt,json
+# Transcribe a public video URL
+pedantic-parakeet https://example.com/watch?v=123
 
-# With timestamps in plain text
-pedantic-parakeet audio.mp3 --format txt --timestamps
+# Output plain text
+pedantic-parakeet audio.mp3 --format txt
+
+# Multiple formats at once
+pedantic-parakeet audio.mp3 --format txt,srt,json
+
+# Process a directory of mixed media
+pedantic-parakeet ./recordings/ --output ./transcripts/
 
 # Preview what would be processed
-pedantic-parakeet ./lectures/ --dry-run
-
-# Verbose mode
-pedantic-parakeet ./lectures/ -v
+pedantic-parakeet ./recordings/ --dry-run
 ```
 
-## Language Bias (Experimental)
+## Available Models
 
-### The Problem
-
-The decoder can drift into English for short stretches. When a French speaker uses common English expressions like "okay" or "so", the model may:
-- Transcribe that segment entirely in English
-- Switch mid-sentence between languages
-- Produce inconsistent output for the same speaker
-
-This is especially common with:
-- **Bilingual speakers** who naturally mix languages
-- **Canadian French** speakers who use English expressions ("by the way", "anyway", "you know")
-- **Technical content** where English terms are standard
-- **Casual speech** with fillers like "okay", "so", "well"
-
-### The Solution
-
-The `--language` flag biases decoding away from a small set of common English filler words and expressions. This helps reduce code-switching when the speaker uses occasional English words.
+List all supported models with their capabilities:
 
 ```bash
-# Basic usage - transcribe French audio
-pedantic-parakeet lecture.mp3 --language fr
+pedantic-parakeet --list-models
 ```
 
-### Understanding Strength
+```
+Supported Models:
 
-The `--language-strength` parameter (0.0-2.0) controls how aggressively English words are suppressed:
+  mlx-community/parakeet-tdt-0.6b-v3
+    Backend: parakeet | Timestamps: ✓ | Aliases: parakeet-v3, parakeet
+    Parakeet TDT 0.6B v3 - High accuracy, language bias support
 
-| Strength | Effect | Best for |
-|----------|--------|----------|
-| `0.0` | No suppression (same as not using --language) | Testing/comparison |
-| `0.5` | Light suppression (default) | Content with intentional English quotes or terms |
-| `1.0` | Moderate suppression | Most French content with occasional anglicisms |
-| `1.5` | Strong suppression | Canadian French or heavily code-switched speech |
-| `2.0` | Maximum suppression | When you want minimal English regardless of context |
+  mlx-community/whisper-large-v3-turbo-asr-fp16
+    Backend: mlx-audio | Timestamps: ✓ | Aliases: whisper-turbo, whisper
+    Whisper Large v3 Turbo - Fast, 100+ languages
 
-**Important**: Higher strength values may cause the model to substitute phonetically similar French words for intentional English. For example, "meeting" might become "mitaine" (mitten). Start with the default and increase only if needed.
+  mlx-community/Voxtral-Mini-3B-2507-bf16
+    Backend: mlx-audio | Timestamps: ✗ | Aliases: voxtral, voxtral-mini
+    Voxtral Mini 3B - LLM-based, context-aware transcription
+```
 
-### Examples
+### Model Comparison
+
+| Model | Backend | Timestamps | Best For |
+|-------|---------|------------|----------|
+| **whisper** (default CLI) | mlx-audio | ✓ | Multilingual (100+ languages), public URL/video workflows |
+| **parakeet** | parakeet | ✓ | English, high accuracy, language bias |
+| **whisper-turbo** | mlx-audio | ✓ | Multilingual (100+ languages) |
+| **voxtral** | mlx-audio | ✗ | Context-aware, LLM-based (text only) |
+
+### Selecting a Model
 
 ```bash
-# European French lecture (occasional "okay" or "so")
-pedantic-parakeet lecture.mp3 --language fr
+# Use the default CLI model (Whisper)
+pedantic-parakeet audio.mp3
 
-# Canadian French podcast (frequent English expressions)
-pedantic-parakeet podcast.mp3 --language fr --language-strength 1.5
+# Use Parakeet explicitly
+pedantic-parakeet audio.mp3 --model parakeet
 
-# Interview where English quotes should be preserved
-pedantic-parakeet interview.mp3 --language fr --language-strength 0.3
+# Use model alias
+pedantic-parakeet audio.mp3 --model whisper
+
+# Use full model ID
+pedantic-parakeet audio.mp3 --model mlx-community/whisper-large-v3-turbo-asr-fp16
+
+# Explicitly select backend
+pedantic-parakeet audio.mp3 --backend mlx-audio --model whisper
 ```
 
-### What Gets Suppressed
+### Important: Voxtral and Timestamps
 
-For French (`--language fr`), the following English words are suppressed:
-- Fillers: okay, OK, so
-- Conjunctions: and, but, or
-- Articles/pronouns: the, it, this, that, I, you, we, they
-- Common verbs: is, are, was, were, have, has, had, do, does, did, will, would, could, should
-- Question words: what, how, why
+Voxtral does not provide word-level timestamps. If you request subtitle formats (srt, vtt, json) with Voxtral, you'll get a clear error:
 
-Suppression is token-level, so multi-word phrases like "by the way" are not explicitly targeted.
-Words that are intentionally English (proper nouns, technical terms, quotes) may still come through, especially at lower strength values.
+```
+Error: Model 'voxtral' does not support timestamps.
+Cannot use formats: srt. Use --format txt instead, or choose a different model.
+```
 
-### Currently Supported Languages
-
-- `fr` - French (suppresses common English words)
-
-More languages may be added in future versions.
+Use `--format txt` with Voxtral:
+```bash
+pedantic-parakeet audio.mp3 --model voxtral --format txt
+```
 
 ## Output Formats
 
-- **txt**: Plain text transcript (optionally with timestamps)
-- **srt**: SubRip subtitle format
-- **vtt**: WebVTT subtitle format
-- **json**: Structured JSON with timestamps and confidence scores
+| Format | Description | Requires Timestamps |
+|--------|-------------|---------------------|
+| **srt** | SubRip subtitles (default) | Yes |
+| **vtt** | WebVTT subtitles | Yes |
+| **json** | Structured data with confidence scores | Yes |
+| **txt** | Plain text | No |
 
-## Features
+```bash
+# Plain text with timestamps
+pedantic-parakeet audio.mp3 --format txt --timestamps
 
-- Batch processing of audio files and directories
-- Automatic audio format conversion (mp3, m4a, wav, flac, ogg, webm)
-- Multiple output formats in a single run
-- Progress bars for long transcriptions
-- Chunked processing for long audio files
+# All formats at once
+pedantic-parakeet audio.mp3 --format all
+```
 
-## Model
+## Language Bias (Parakeet Only)
 
-Uses NVIDIA's Parakeet TDT models via MLX, optimized for Apple Silicon. The default model (`parakeet-tdt-0.6b-v3`) will be downloaded on first run (~1GB).
+When transcribing non-English audio, the Parakeet model may occasionally produce English words for common fillers ("okay", "so", "the"). The `--language` flag biases decoding away from these words.
+
+```bash
+# French audio with occasional English expressions
+pedantic-parakeet lecture.mp3 --language fr
+
+# Stronger bias for heavily code-switched speech
+pedantic-parakeet podcast.mp3 --language fr --language-strength 1.5
+```
+
+### Strength Levels
+
+| Strength | Effect | Use Case |
+|----------|--------|----------|
+| 0.0 | No suppression | Testing/comparison |
+| 0.5 | Light (default) | Preserve intentional English |
+| 1.0 | Moderate | Most non-English content |
+| 1.5 | Strong | Canadian French, heavy code-switching |
+| 2.0 | Maximum | Minimal English regardless of context |
+
+**Note:** Language bias only works with the Parakeet backend. Using `--language-strength` with Whisper or Voxtral will produce an error:
+
+```
+Error: Model 'whisper' does not support --language-strength.
+Models with language bias support: mlx-community/parakeet-tdt-0.6b-v3
+```
+
+**Currently supported:** French (`fr`)
+
+## CLI Reference
+
+```
+pedantic-parakeet [OPTIONS] INPUTS...
+
+Arguments:
+  INPUTS...              Media files, directories, or public URLs to transcribe
+
+Options:
+  -o, --output PATH      Output directory (default: same as input)
+  -f, --format TEXT      Output format(s): txt, srt, vtt, json, or 'all'
+  -r, --recursive        Search directories recursively
+  -t, --timestamps       Include timestamps in plain text output
+  --dry-run              Show what would be processed without transcribing
+  -m, --model TEXT       Model ID or alias (see --list-models)
+  -b, --backend TEXT     Backend: parakeet or mlx-audio (auto-detected)
+  --list-models          List supported models and exit
+  --chunk-duration FLOAT Chunk duration for long audio (default: 120s)
+  -l, --language TEXT    Target language for bias (fr)
+  --language-strength    Bias strength 0.0-2.0 (default: 0.5)
+  -v, --verbose          Show detailed progress
+  -V, --version          Show version and exit
+```
+
+## Examples
+
+### Basic Transcription
+
+```bash
+# Single file to SRT
+pedantic-parakeet meeting.mp3
+
+# Local video file
+pedantic-parakeet meeting.mp4
+
+# Single file to text
+pedantic-parakeet meeting.mp3 -f txt
+
+# With verbose progress
+pedantic-parakeet meeting.mp3 -v
+```
+
+### Batch Processing
+
+```bash
+# Process directory
+pedantic-parakeet ./recordings/
+
+# Recursive with custom output
+pedantic-parakeet ./recordings/ -r --output ./transcripts/
+
+# Preview first
+pedantic-parakeet ./recordings/ -r --dry-run
+```
+
+### Public URLs
+
+```bash
+# Public reel, clip, or hosted media URL
+pedantic-parakeet https://example.com/watch?v=123
+
+# Save transcript outputs somewhere specific
+pedantic-parakeet https://example.com/watch?v=123 --output ./transcripts
+```
+
+URL support is intentionally conservative in v1:
+
+- Only public `http`/`https` media URLs are supported
+- Literal private, loopback, and link-local IP hosts are rejected
+- Playlists are not downloaded; only single media items are supported
+- Downloads are temporary and bounded by timeout/filesize guardrails
+- Sources that require login, cookies, or other authentication are not supported
+
+### Multilingual Content
+
+```bash
+# Whisper is the CLI default and works well for non-English languages
+pedantic-parakeet spanish_audio.mp3
+
+# French with language bias (Parakeet)
+pedantic-parakeet french_lecture.mp3 --language fr
+```
+
+### Multiple Formats
+
+```bash
+# Text and subtitles
+pedantic-parakeet audio.mp3 -f txt,srt
+
+# All formats
+pedantic-parakeet audio.mp3 -f all
+```
 
 ## Notes
 
-- The decoder can drift into English in short stretches. See [Language Bias](#language-bias-experimental) if you're transcribing non-English content with occasional English words.
+- Models are downloaded on first use (~1-3GB depending on model)
+- Parakeet models are optimized for English but work with other languages
+- The CLI defaults to Whisper for best multilingual support
+- Long audio files are automatically chunked (configurable with `--chunk-duration`)
+- Public URLs must be reachable without login/cookies in v1
+- URL downloads use `yt-dlp` with single-item resolution plus timeout/filesize guardrails
 
 ## License
 
