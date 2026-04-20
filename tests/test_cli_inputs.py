@@ -116,6 +116,34 @@ def test_dry_run_accepts_public_url(monkeypatch):
     assert ".srt" in result.output
 
 
+def test_dry_run_skips_backend_availability_validation(monkeypatch):
+    from pedantic_parakeet import cli
+
+    monkeypatch.setattr(
+        cli,
+        "resolve_inputs",
+        lambda inputs, recursive: [
+            make_url_source(
+                url=inputs[0],
+                display_name="Bonjour le monde",
+                output_stem="Bonjour le monde",
+            )
+        ],
+    )
+
+    def fail_backend_validation(model_id: str, backend: str | None) -> None:
+        raise AssertionError(
+            f"backend availability should not be checked during dry-run: {model_id=} {backend=}"
+        )
+
+    monkeypatch.setattr(cli, "_validate_backend_availability", fail_backend_validation)
+
+    result = runner.invoke(cli.app, ["--dry-run", "https://example.com/watch?v=123"])
+
+    assert result.exit_code == 0
+    assert "Bonjour le monde" in result.output
+
+
 def test_cli_uses_whisper_as_default_model(tmp_path: Path, monkeypatch):
     from pedantic_parakeet import cli
 

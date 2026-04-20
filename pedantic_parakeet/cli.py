@@ -551,9 +551,6 @@ def main(  # NOSONAR - Typer entrypoint intentionally exposes the public CLI opt
     # Validate language capabilities BEFORE instantiating backend
     _validate_language_capabilities(language, language_strength, model)
 
-    # Validate backend availability BEFORE instantiating backend
-    _validate_backend_availability(model, backend)
-
     # Resolve local paths and public URLs into transcribable sources
     try:
         sources = resolve_inputs(inputs, recursive=recursive)
@@ -574,6 +571,9 @@ def main(  # NOSONAR - Typer entrypoint intentionally exposes the public CLI opt
     if dry_run:
         _show_dry_run(sources, formats, output, console)
         raise typer.Exit(0)
+
+    # Validate backend availability before instantiating backend
+    _validate_backend_availability(model, backend)
 
     # Check ffmpeg (warning only)
     if not check_ffmpeg():
