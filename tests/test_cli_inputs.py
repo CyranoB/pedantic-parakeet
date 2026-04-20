@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+import typer
 from typer.testing import CliRunner
 
 from pedantic_parakeet.types import Segment, Token, TranscriptionResult
@@ -144,6 +145,24 @@ def test_dry_run_skips_backend_availability_validation(monkeypatch):
     assert "Bonjour le monde" in result.output
 
 
+def test_non_dry_run_validates_backend_before_resolving_inputs(monkeypatch):
+    from pedantic_parakeet import cli
+
+    def fail_if_resolve_called(inputs, recursive):
+        raise AssertionError("resolve_inputs should not run before backend validation")
+
+    def fail_backend_validation(model_id: str, backend: str | None) -> None:
+        raise typer.BadParameter("mlx-audio missing", param_hint="--model")
+
+    monkeypatch.setattr(cli, "resolve_inputs", fail_if_resolve_called)
+    monkeypatch.setattr(cli, "_validate_backend_availability", fail_backend_validation)
+
+    result = runner.invoke(cli.app, ["https://example.com/watch?v=123"])
+
+    assert result.exit_code == 2
+    assert "mlx-audio missing" in result.output
+
+
 def test_cli_uses_whisper_as_default_model(tmp_path: Path, monkeypatch):
     from pedantic_parakeet import cli
 
@@ -152,6 +171,11 @@ def test_cli_uses_whisper_as_default_model(tmp_path: Path, monkeypatch):
 
     patch_local_cli_io(cli, monkeypatch, media_file)
     monkeypatch.setattr(cli, "Transcriber", DummyTranscriber)
+    monkeypatch.setattr(
+        cli,
+        "_validate_backend_availability",
+        lambda model_id, backend: None,
+    )
 
     result = runner.invoke(cli.app, [str(media_file), "--format", "txt"])
 

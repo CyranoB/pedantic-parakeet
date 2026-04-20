@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import ipaddress
 import re
 import shutil
 import tempfile
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
@@ -41,7 +43,26 @@ class MaterializedSource:
 def is_url_input(value: str) -> bool:
     """Return True when the input looks like an HTTP(S) URL."""
     parsed = urlparse(value)
-    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return False
+
+    hostname = parsed.hostname
+    if hostname is None:
+        return False
+
+    try:
+        address = ipaddress.ip_address(hostname)
+    except ValueError:
+        return True
+
+    return not (
+        address.is_private
+        or address.is_loopback
+        or address.is_link_local
+        or address.is_multicast
+        or address.is_reserved
+        or address.is_unspecified
+    )
 
 
 def sanitize_output_stem(value: str) -> str:
@@ -65,6 +86,8 @@ def fetch_url_metadata(url: str) -> dict:
         "no_warnings": True,
         "noprogress": True,
         "skip_download": True,
+        "noplaylist": True,
+        "socket_timeout": 30,
     }
     with YoutubeDL(options) as ydl:
         return ydl.extract_info(url, download=False)
@@ -134,9 +157,21 @@ def _pick_downloaded_media(temp_dir: Path) -> Path:
     candidates = [path for path in temp_dir.rglob("*") if path.is_file()]
     media_candidates = [path for path in candidates if is_supported_audio(path)]
     if media_candidates:
-        return min(media_candidates)
+        if len(media_candidates) > 1:
+            warnings.warn(
+                "Multiple media files were downloaded; using the largest supported file.",
+                UserWarning,
+                stacklevel=2,
+            )
+        return max(media_candidates, key=lambda path: (path.stat().st_size, path.name))
     if candidates:
-        return min(candidates)
+        if len(candidates) > 1:
+            warnings.warn(
+                "Multiple downloaded files were found; using the largest file.",
+                UserWarning,
+                stacklevel=2,
+            )
+        return max(candidates, key=lambda path: (path.stat().st_size, path.name))
     raise InputResolutionError("yt-dlp did not produce a downloadable media file")
 
 
@@ -157,6 +192,9 @@ def download_url_source(source: ResolvedSource) -> MaterializedSource:
         "quiet": True,
         "no_warnings": True,
         "noprogress": True,
+        "noplaylist": True,
+        "socket_timeout": 30,
+        "max_filesize": 512 * 1024 * 1024,
         "format": "bestaudio/best/best",
         "outtmpl": str(temp_dir / "%(title).120B [%(id)s].%(ext)s"),
     }

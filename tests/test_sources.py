@@ -8,6 +8,7 @@ from pedantic_parakeet.sources import (
     InputResolutionError,
     MaterializedSource,
     ResolvedSource,
+    _pick_downloaded_media,
     cleanup_materialized_source,
     is_url_input,
     materialize_source,
@@ -52,6 +53,13 @@ def test_is_url_input_recognizes_http_and_https():
     assert is_url_input("https://example.com/watch?v=123")
     assert not is_url_input("/Users/example/video.mp4")
     assert not is_url_input("recording.m4a")
+
+
+def test_is_url_input_rejects_private_and_link_local_hosts():
+    assert not is_url_input("http://127.0.0.1/video")
+    assert not is_url_input("http://192.168.1.20/video")
+    assert not is_url_input("http://169.254.169.254/latest/meta-data")
+    assert not is_url_input("http://[::1]/video")
 
 
 def test_resolve_inputs_expands_directories_and_local_files(tmp_path: Path):
@@ -180,3 +188,19 @@ def test_cleanup_materialized_source_removes_temporary_downloads(tmp_path: Path)
     cleanup_materialized_source(materialized)
 
     assert not tmp_path.exists()
+
+
+def test_pick_downloaded_media_prefers_largest_supported_media(
+    tmp_path: Path, recwarn: pytest.WarningsRecorder
+):
+    smaller_media = tmp_path / "small.m4a"
+    smaller_media.write_bytes(b"a" * 4)
+    larger_media = tmp_path / "large.webm"
+    larger_media.write_bytes(b"b" * 8)
+    sidecar = tmp_path / "metadata.json"
+    sidecar.write_text("{}", encoding="utf-8")
+
+    selected = _pick_downloaded_media(tmp_path)
+
+    assert selected == larger_media
+    assert "Multiple media files" in str(recwarn.pop(UserWarning).message)

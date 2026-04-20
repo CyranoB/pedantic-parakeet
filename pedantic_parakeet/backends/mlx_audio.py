@@ -331,7 +331,7 @@ class MlxAudioBackend:
     def transcribe(
         self,
         audio_path: Path | str,
-        _chunk_callback: Callable[[float, float], None] | None = None,
+        chunk_callback: Callable[[float, float], None] | None = None,
     ) -> TranscriptionResult:
         """Transcribe an audio file.
 

@@ -1,8 +1,11 @@
 """Tests for backend registry and resolution."""
 
+from types import SimpleNamespace
+
 import pytest
 
-from pedantic_parakeet.backends.base import Backend, STTCapabilities, ModelInfo
+from pedantic_parakeet.backends.base import Backend, ModelInfo, STTCapabilities
+from pedantic_parakeet.backends.mlx_audio import MlxAudioBackend
 from pedantic_parakeet.backends.registry import (
     MODEL_REGISTRY,
     get_model_info,
@@ -179,3 +182,47 @@ class TestCapabilities:
         """Voxtral should NOT support timestamps (text-only output)."""
         info = resolve_model("voxtral")
         assert info.capabilities.supports_timestamps is False
+
+
+class TestRegistryIntegrity:
+    """Tests for internal registry consistency."""
+
+    def test_aliases_are_globally_unique(self):
+        """Aliases should not collide across curated models."""
+        aliases: dict[str, str] = {}
+        for info in MODEL_REGISTRY.values():
+            for alias in info.aliases:
+                previous = aliases.setdefault(alias, info.model_id)
+                assert previous == info.model_id
+
+
+class TestMlxAudioBackend:
+    """Tests for mlx-audio backend wrapper behavior."""
+
+    def test_transcribe_accepts_chunk_callback_keyword(self, monkeypatch):
+        """Backend should accept the shared chunk_callback keyword."""
+        backend = object.__new__(MlxAudioBackend)
+        backend._model_id = "mlx-community/whisper-large-v3-turbo-asr-fp16"
+        backend._capabilities = STTCapabilities(
+            supports_timestamps=True,
+            supports_language_bias=False,
+            supports_language_hint=True,
+            supports_chunking=False,
+        )
+        backend.chunk_duration = None
+        backend.overlap_duration = 15.0
+        backend.language = None
+        backend._model = None
+
+        fake_model = SimpleNamespace(
+            generate=lambda audio_path, **kwargs: SimpleNamespace(
+                text="hello world",
+                segments=[],
+            )
+        )
+        monkeypatch.setattr(backend, "_load_model", lambda: fake_model)
+        monkeypatch.setattr(backend, "_build_generate_kwargs", lambda: {})
+
+        result = backend.transcribe("sample.wav", chunk_callback=lambda current, total: None)
+
+        assert result.text == "hello world"

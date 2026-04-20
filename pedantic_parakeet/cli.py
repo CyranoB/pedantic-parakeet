@@ -551,6 +551,27 @@ def main(  # NOSONAR - Typer entrypoint intentionally exposes the public CLI opt
     # Validate language capabilities BEFORE instantiating backend
     _validate_language_capabilities(language, language_strength, model)
 
+    if dry_run:
+        try:
+            sources = resolve_inputs(inputs, recursive=recursive)
+        except InputResolutionError as exc:
+            err_console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(1) from exc
+
+        if not sources:
+            err_console.print("[red]No media files found.[/red]")
+            err_console.print(f"Supported formats: {', '.join(sorted(SUPPORTED_EXTENSIONS))}")
+            raise typer.Exit(1)
+
+        if output:
+            output.mkdir(parents=True, exist_ok=True)
+
+        _show_dry_run(sources, formats, output, console)
+        raise typer.Exit(0)
+
+    # Validate backend availability before instantiating backend
+    _validate_backend_availability(model, backend)
+
     # Resolve local paths and public URLs into transcribable sources
     try:
         sources = resolve_inputs(inputs, recursive=recursive)
@@ -566,14 +587,6 @@ def main(  # NOSONAR - Typer entrypoint intentionally exposes the public CLI opt
     # Create output directory if specified
     if output:
         output.mkdir(parents=True, exist_ok=True)
-
-    # Dry run: just show what would be processed
-    if dry_run:
-        _show_dry_run(sources, formats, output, console)
-        raise typer.Exit(0)
-
-    # Validate backend availability before instantiating backend
-    _validate_backend_availability(model, backend)
 
     # Check ffmpeg (warning only)
     if not check_ffmpeg():

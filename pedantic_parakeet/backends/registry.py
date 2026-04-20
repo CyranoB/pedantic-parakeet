@@ -64,6 +64,24 @@ MODEL_REGISTRY: dict[str, ModelInfo] = {
 }
 
 
+def _build_alias_registry() -> dict[str, ModelInfo]:
+    """Build and validate the alias lookup table."""
+    alias_registry: dict[str, ModelInfo] = {}
+    for info in MODEL_REGISTRY.values():
+        for alias in info.aliases:
+            existing = alias_registry.get(alias)
+            if existing is not None and existing.model_id != info.model_id:
+                raise ValueError(
+                    f"Duplicate model alias '{alias}' defined for "
+                    f"{existing.model_id} and {info.model_id}"
+                )
+            alias_registry[alias] = info
+    return alias_registry
+
+
+ALIAS_REGISTRY = _build_alias_registry()
+
+
 def get_model_info(model_id: str) -> ModelInfo | None:
     """Get model info by exact model ID.
 
@@ -108,15 +126,13 @@ def resolve_model(model_id: str) -> ModelInfo:
         return MODEL_REGISTRY[model_id]
 
     # Try alias lookup
-    for info in MODEL_REGISTRY.values():
-        if model_id in info.aliases:
-            return info
+    aliased = ALIAS_REGISTRY.get(model_id)
+    if aliased is not None:
+        return aliased
 
     # Not found - provide helpful error
     supported = sorted(MODEL_REGISTRY.keys())
-    aliases = sorted(
-        alias for info in MODEL_REGISTRY.values() for alias in info.aliases
-    )
+    aliases = sorted(ALIAS_REGISTRY)
 
     raise ValueError(
         f"Unknown model: '{model_id}'. "
